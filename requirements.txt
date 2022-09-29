@@ -1,0 +1,7 @@
+pandas
+numpy
+jupyterlab
+ipython
+jupyter
+yt-dlp
+tqdm
