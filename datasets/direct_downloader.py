@@ -81,12 +81,11 @@ print("URLS: ", URLS)
 
 
 ## Dispatch command 
-def download_url(url, base_command, base='downloads'):
+def download_url(url, cmd_base, base='downloads'):
 	# url is a string of the video id; opts is a dictionary with all the 
 	# commandline args for `yt-dlp` call. 
-	full_command = base_command.append(url)
-	full_command = base_command
-	# print(full_command)
+	full_command = cmd_base + [url]
+	# print("\t", full_command)
 
 	print(f"Downloading {url}...")
 
@@ -105,6 +104,8 @@ def download_url(url, base_command, base='downloads'):
 
 num_naps = 0
 cnt = 0
+streak = 0
+good_streak = 0
 print("\n\n\nSTARTING DOWNLOADS!")
 for u in URLS: 
 	cnt+=1
@@ -112,10 +113,17 @@ for u in URLS:
 
 	if retval != None and retval.returncode != 0: 
 		num_naps+=1
+		streak += 1
+		good_streak = 0
+
 		print(retval)
-		print(f"\n\nNap #{num_naps} of {cnt} tries...")
+		print(f"\n\nNap #{num_naps} of {cnt} tries, {streak} streak...")
 		time.sleep(30)
 		print("Wakeup!\n")
 		# exit(0)
+	else: 
+		streak = 0
+		good_streak += 1
+		print(f"\tSuccess streak: {good_streak} \tTotal: {cnt}\n")
 
 	time.sleep(5)
