@@ -5,3 +5,7 @@ ipython
 jupyter
 yt-dlp
 tqdm
+tensorflow
+matplotlib
+opencv-python
+imageio
