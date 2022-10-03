@@ -1,7 +1,8 @@
 # Multimodal Foundation
 
 Multimodal foundation models for extracting and understanding latent objects,
-actions, and dynamics.
+actions, and dynamics. This work builds upon the [Perceiver
+paper](https://arxiv.org/abs/2103.03206) (Jaegel et al, 2021, DeepMind)
 
 
 ## Repo Structure
