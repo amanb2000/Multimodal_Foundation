@@ -11,22 +11,20 @@ import random
 import pathlib
 import itertools
 import collections
+import random
+import pdb
 
 import tensorflow as tf 
 import numpy as np
 import matplotlib.pyplot as plt
 import pathlib 
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 import cv2
-# Some modules to display an animation using imageio.
-import imageio
-from IPython import display
-from urllib import request
-from tensorflow_docs.vis import embed
+
 
 
 def get_videoset(data_folder, num_videos, nframes=101, random_select=True, 
-		batch_size=1, output_size=(256,256)): 
+		batch_size=1, output_size=(256,256), hard_crop=True): 
 	""" Primary method for obtaining the video dataset. 
 
 	Arguments: 
@@ -45,9 +43,31 @@ def get_videoset(data_folder, num_videos, nframes=101, random_select=True,
 							element has dimensions 
 							[batch_size, nframes, height, width, channels].
 	"""
-	
+	## 1: Get the list of paths to load.
+	assert os.path.exists(data_folder), "Data folder does not exist!"
+	mp4list = os.listdir(data_folder) 
+	mp4list = [l for l in mp4list if l.endswith("mp4")]
 
-def get_numpy_video_tensor(video_path, n_frames, output_size = (256,256), hard_crop=True):
+	if random_select: 
+		random.shuffle(mp4list)
+	mp4list = mp4list[:num_videos]
+	pathlist = [os.path.join(data_folder, i) for i in mp4list] # final pathlist
+
+	## 2: Load the paths, convert to tensors/dataset. 
+	# video_tensor_list = [get_single_video_tensor(i, nframes, output_size=output_size, hard_crop=hard_crop) for i in pathlist]
+	video_tensor_list = []
+
+	for i in tqdm(pathlist):
+		new_tensor = get_single_video_tensor(i, nframes, output_size=output_size, hard_crop=hard_crop)
+		video_tensor_list.append(new_tensor)
+
+	VideoSet = tf.data.Dataset.from_tensor_slices(video_tensor_list)
+	VideoSet = VideoSet.batch(batch_size)
+
+	## 3: Return
+	return VideoSet
+
+def get_single_video_tensor(video_path, n_frames, output_size = (256,256), hard_crop=True):
 	""" Creates frames from each video file present for each category.
 
 	Args:
@@ -63,6 +83,7 @@ def get_numpy_video_tensor(video_path, n_frames, output_size = (256,256), hard_c
 
 	result = [] # List of frames, converted to a numpy tensor at the end.
 
+	assert os.path.exists(video_path), "Video path does not exist!"
 	src = cv2.VideoCapture(str(video_path))
 	video_length = src.get(cv2.CAP_PROP_FRAME_COUNT)
 
@@ -109,3 +130,9 @@ def get_numpy_video_tensor(video_path, n_frames, output_size = (256,256), hard_c
 	result = np.array(result)[..., [2, 1, 0]]
 
 	return result
+
+
+if __name__ == "__main__":
+	## Testing out functions 
+	VideoSet = get_videoset("../datasets/downloads", 10)
+	print("\nSuccessfully obtained VideoSet: ", VideoSet)
