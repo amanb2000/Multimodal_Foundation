@@ -1,5 +1,6 @@
 """ 
-Functions for loading the video dataset. 
+Functions for loading the video dataset. Patching & positional encoding is 
+in `preprocessing.py`. 
 
 Prototyped in `/sketch/02_Video_Loading.ipynb`.
 """
@@ -25,7 +26,7 @@ import cv2
 
 def get_videoset(data_folder, num_videos, nframes=101, random_select=True, 
 		batch_size=1, output_size=(256,256), hard_crop=True): 
-	""" Primary method for obtaining the video dataset. 
+	""" Primary method for obtaining the video Dataset.
 
 	Arguments: 
 		`data_folder`: 		Path to the enclosing folder with all the .mp4 files.
