@@ -97,6 +97,21 @@ def unflatten_patched(patch_tensor, duration, height, width):
 	assert thw == duration*height*width, "Patch duration*height*width must equal the patch's flattened length!"
 	return tf.reshape(patch_tensor, duration, height, width, cs) 
 
+
+def get_fourier_codes(num_idx, k, mu): 
+	""" Returns a single [num_idx, k] shaped set of fourier codes. 
+	"""
+	x_m = (tf.range(num_idx, dtype=tf.float32) / num_idx) * 2 - 1
+	f_ks = tf.range(1, mu/2, delta=(mu/2 - 1)/k, dtype=tf.float32)
+	x_args = math.pi * tf.expand_dims(x_m, axis=1) * tf.expand_dims(f_ks, axis=0)
+
+	x_sin = tf.sin(x_args) 
+	x_cos = tf.cos(x_args) 
+
+	x_feats = tf.concat( [x_sin, x_cos, tf.expand_dims(x_m, axis=1)] , axis=1)
+
+	return x_feats
+
 def get_spacetime_codes(num_times, num_heights, num_widths, k_space=15, 
 		mu_space=20, k_time=64, mu_time=200):
 	""" Produces Fourier features for positionally coding x, y, and time 
