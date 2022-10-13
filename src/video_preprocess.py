@@ -35,7 +35,7 @@ import pdb
 def make_patchset(VideoSet, patch_duration, patch_height, patch_width): 
 	"""Takes a VideoSet tf.data.Dataset object with full video tensors 
 	of size [batch, nframes, height, width, channels] and returns a set of 
-	patches. 
+	patches of shape [batch, n_timepatch, n_heightpatch, n_widthpatch, patch_dim]
 
 	These are NOT flattened patches. 
 	"""
@@ -61,7 +61,7 @@ def patch_to_flatpatch(PatchedSet, batch_size=1):
 		""" Flattens the 3D structure of spacetime patches into a [batch, num_patches, patch_len] 
 		tensor. Should be applied after positional encoding, generally. 
 		"""
-		print("Flattening a tensor of shape: ", patch_tensor.shape)
+		# print("Flattening a tensor of shape: ", patch_tensor.shape)
 		b, t, h, w, cs = patch_tensor.shape
 		return tf.reshape(patch_tensor, [batch_size, t*h*w, cs])
 
@@ -92,10 +92,20 @@ def add_spacetime_codes(patch_tensor, k_space=15, mu_space=20,
 
 
 ## Helper Functions
-def unflatten_patched(patch_tensor, duration, height, width):
+def unflatten_patched(patch_tensor, n_time, n_height, n_width):
+	""" Given a single tensor of shape [batch, token_dim, #tokens], this 
+	function returns an unflattened spacetime patched version of shape 
+	[batch, n_time, n_height, n_width, #tokens]. 
+
+	n_time, ... are the number of patches associated with each spacetime 
+	dimension. E.g., n_height = original_height // height_patch_size
+
+	Apply to `Dataset` via Dataset.map(lambda x: unflatten_patched(x, ...))
+	"""
+
 	b, thw, cs = patch_tensor.shape
-	assert thw == duration*height*width, "Patch duration*height*width must equal the patch's flattened length!"
-	return tf.reshape(patch_tensor, duration, height, width, cs) 
+	assert thw == n_time*n_height*n_width, "Patch duration*height*width must equal the patch's flattened length!"
+	return tf.reshape(patch_tensor, [b, n_time, n_height, n_width, cs]) 
 
 
 def get_fourier_codes(num_idx, k, mu): 
@@ -186,6 +196,40 @@ def get_spacetime_codes(num_times, num_heights, num_widths, k_space=15,
 # TODO: Finish the function to completely restore the original video tensor from 
 # 		a set of patches. 
 
+def make_3D_patches(tensor, p_dur, p_height, p_width, channels=3):
+	""" The input tensor is a collection of patch tokens of shape 
+	[batch, ..., patch_dim] where patch_dim = p_dur * p_height * p_width * channels. 
+
+	The output will be a tensor of shape [batch, ..., p_dur, p_height, p_width, channels]. 
+
+	This is part of a transformation from patched video -> regular video tensor.
+	"""
+
+	og_shape = tensor.shape 
+	new_shape = og_shape[:-1] 
+	new_shape = new_shape + [p_dur, p_height, p_width, channels] 
+
+	assert p_dur * p_height * p_width * channels == og_shape[-1], "Patch dimension doesn't match the proposed p_dur, p_height, ...!"
+
+	return tf.reshape(tensor, new_shape)
+
+def get_vidtensor_from_8D(tensor): 
+	""" Given a rank-8 tensor of the shape, 
+		[batch, n_time_p, n_height_p, n_width_p, p_dur, p_height, p_width, channels]
+	, this returns a regular video tensor of shape [batch, n_frames, height, width, channels]. 		
+	"""
+	n_time_p = tensor.shape[1]
+	n_height_p = tensor.shape[2] 
+	n_width_p = tensor.shape[3] 
+	
+	# Start by unpatching height dimension 
+	unpatched_h = tf.concat([tensor[:, :, i, :, :, :, :] for i in range(n_height_p)], axis=4) 
+	# Next let's unpatch the width dimension 
+	unpatched_hw = tf.concat([unpatched_h[:,:,i,:,:,:,:] for i in range(n_width_p)], axis=4) 
+	# Finally let's unpatch the time timension 
+	unpatched_hwt = tf.concat([unpatched_hw[:,i,:,:,:,:] for i in range(n_time_p)], axis=1) 
+	return unpatched_hwt
+
 
 if __name__ == "__main__": 
 	## Getting the VideoSet
@@ -196,8 +240,9 @@ if __name__ == "__main__":
 	VideoSet = vl.get_videoset("../datasets/downloads", num_videos, num_frames, output_size=output_size)
 	print("Retrieved VideoSet!\n")
 
+
 	## Getting patch dataset
-	p_dur = 3
+	p_dur = 4
 	p_height = 16
 	p_width = 16
 	print("Making patches from Videoset...")
@@ -214,7 +259,7 @@ if __name__ == "__main__":
 	k_space = 15
 	mu_space = 20 
 	k_time = 64 
-	mu_time = 200
+	mu_time = 200 
 
 
 	print("Adding codes to the PatchSet...")
@@ -222,7 +267,9 @@ if __name__ == "__main__":
 			k_space=k_space, mu_space=mu_space, k_time=k_time, mu_time=mu_time))
 	print("Done adding codes!\n")
 	print("Flattening the coded + patched dataset...")
+
 	FlatCodedPatchedSet = patch_to_flatpatch(CodedPatchedSet, batch_size=batch_size)
+	
 	print("Done flattening!\n")
 	print("All done! Report: ")
 	print("VideoSet: ", VideoSet)
@@ -231,3 +278,33 @@ if __name__ == "__main__":
 	print("CodedPatchedSet: ", CodedPatchedSet)
 	print("FlatCodedPatchedSet: ", FlatCodedPatchedSet)
 
+
+
+	## Testing inverse process
+	print("\n\nNow transforming `FlatPatchSet` -> `PatchSet`...")
+
+	# Parameters for unflattening the set of patches 
+	n_time_patches = num_frames // p_dur 
+	n_height_patches = output_size[0] // p_height 
+	n_width_patches = output_size[1] // p_width 
+
+	print("\tNumber of [time, height, width] patches:  ", (n_time_patches, 
+			n_height_patches, n_width_patches))
+	
+	rPatchSet = FlatPatchSet.map(lambda x: unflatten_patched(x, n_time_patches, 
+			n_height_patches, n_width_patches))
+	print("rPatchSet: ", rPatchSet)
+
+	# Now making the big 8D dataset [batch, n_time_patch, n_height_p, n_width_p, p_dur, p_height, p_width, #channels]
+	r8DPatchSet = rPatchSet.map(lambda x: make_3D_patches(x, p_dur, p_height, p_width))
+	print("r8DPatchSet: ", r8DPatchSet) 
+
+	# Turning 8D dataset tensor into regular 4D video tensor!
+	rVideoSet = r8DPatchSet.map(lambda x: get_vidtensor_from_8D(x))
+	print("rVideoSet: ", rVideoSet)
+
+	out_path = "../scratch/test/"
+	print(f"\nSaving VideoSet and rVideoSet in {out_path}")
+
+	VideoSet.save(os.path.join(out_path, "VideoSet"))
+	rVideoSet.save(os.path.join(out_path, "rVideoSet"))
