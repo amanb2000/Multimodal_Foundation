@@ -126,7 +126,9 @@ def get_single_video_tensor(video_path, n_frames, output_size = (256,256), hard_
 	
 	src.release()
 	# Ensure that the color scheme is not inverted
-	assert len(result) != 0, "Unable to read in any frames. Check that the video path is valid."
+	if len(result) == 0:
+		print(f"Unable to read in any frames in {video_path}. Check that the video path is valid.")
+		return None
 
 	result = np.array(result)[..., [2, 1, 0]]
 
