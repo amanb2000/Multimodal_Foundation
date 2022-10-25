@@ -9,3 +9,5 @@ tensorflow
 matplotlib
 opencv-python
 imageio
+pyyaml 
+h5py
