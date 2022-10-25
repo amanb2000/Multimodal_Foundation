@@ -33,8 +33,8 @@ print("\t=== GPU DEVICE SETUP ===")
 print("\t========================")
 
 physical_devices = tf.config.list_physical_devices("GPU")
-for device in physical_devices:
-    tf.config.experimental.set_memory_growth(device, True)
+# for device in physical_devices:
+#     tf.config.experimental.set_memory_growth(device, True)
 
 print("Physical devices: ",physical_devices)
 
@@ -53,7 +53,7 @@ patch_width = 16
 patch_duration = 3
 
 batch_size = 10
-num_prefetch = 3
+num_prefetch = 4
 
 # Fourier feature codes 
 k_space = 15
@@ -92,14 +92,14 @@ def generate_video_tensors():
 	_DATA_FOLDER = DATA_FOLDER
 	_output_size = output_size
 	_num_frames = num_frames
-
-	for fname in _mp4_list:
-		try:
-			retval = vl.get_single_video_tensor(os.path.join(_DATA_FOLDER, fname), _num_frames, output_size=_output_size)
-		except:
-			continue
-		if type(retval) == np.ndarray and retval.shape[0] == _num_frames:
-			yield np.expand_dims(retval, axis=0)
+	while True: 
+		for fname in _mp4_list:
+			try:
+				retval = vl.get_single_video_tensor(os.path.join(_DATA_FOLDER, fname), _num_frames, output_size=_output_size)
+			except:
+				continue
+			if type(retval) == np.ndarray and retval.shape[0] == _num_frames:
+				yield np.expand_dims(retval, axis=0)
 
 videoset = tf.data.Dataset.from_generator(generate_video_tensors, output_signature=tf.TensorSpec(shape=[1, num_frames, *output_size, 3], dtype=tf.float32))
 print(videoset)
@@ -120,12 +120,15 @@ def show_nn_sq(video_tensor, n=3, outname="breh.png"):
 
 	fig.suptitle(f"Video Survey over {_nframes} Frames")
 	plt.savefig(outname)
+	plt.show()
 
+"""
 out_test = "debug/test_from_videoset.png"
 print(f"Showing off an element of the videodataset(generator) in `{out_test}`")	
 for element in videoset:
 	show_nn_sq(tf.squeeze(element), outname=out_test)
 	break
+"""
 
 print("Making patches from Videoset...")
 PatchSet = vp.make_patchset(videoset, patch_duration, patch_height, patch_width)
@@ -165,7 +168,7 @@ print("\t========================")
 ## Setting up the component modules of the top-level PAE model.
 # Encoder 
 n_encoder_blocks = 3
-p_droptoken = 1.0
+p_droptoken = 0.3
 re_droptoken = True
 encoder_tfres = False
 enc_nheads = 15
@@ -201,20 +204,51 @@ perceiver_ae = m1.PerceiverAE(mse, test_encoder, test_latent_ev, test_decoder, c
 
 perceiver_ae.reset_latent()
 
+
 print("Done setting up perceiver_ae model!")
 
 
 import train_m1
 
-dset_size = 10
+
+print("\t===================================================")
+print(f"\t=== TRAINING MODEL: AUTOENCODING FULL {num_frames} VIDEOS ===")
+print("\t===================================================")
+dset_size = 500
 optimizer = keras.optimizers.Adam(learning_rate=0.001)
 # train_m1.train_model(perceiver_ae, FlatCodedPatchedSet, optimizer, dset_size)
 
-flat_el = None
+losses = []
+current_gpu_use = []
+peak_gpu_use = []
+with tf.device('/GPU:1'):
+	tf.config.experimental.reset_memory_stats('/GPU:1')
+	cnt=0
+	for el in tqdm(FlatCodedPatchedSet, total=dset_size):
+		loss = train_m1.training_step(perceiver_ae, el, optimizer)
+		losses.append(loss.numpy())
+		print("Loss: ", loss.numpy())
 
-for el in FlatCodedPatchedSet:
-	flat_el = el 
-	break
+		cnt+=1 
+		if cnt == dset_size:
+			break
+		elif cnt == 2:
+			print(perceiver_ae.summary())
 
-for i in range(dset_size):
-	train_m1.training_step(perceiver_ae, flat_el, optimizer)
+		dct = tf.config.experimental.get_memory_info('/GPU:1')
+		current_gpu_use.append(dct["current"]*0.000001)
+		peak_gpu_use.append(dct["peak"]*0.000001)
+	
+print("\nDONE TRAINING!!!")
+
+plt.plot(losses)
+plt.title(f"Surprises over Time -- Autoencoding {num_frames} Frames")
+plt.savefig("loss.png")
+plt.close()
+
+plt.plot(current_gpu_use, label="current")
+plt.plot(peak_gpu_use, label="peak")
+plt.title("GPU Use per Iteration")
+plt.legend()
+plt.savefig("GPU_use.png")
+plt.close()
