@@ -27,20 +27,19 @@ from tqdm import tqdm
 import pdb
 
 
-def training_step(model, video, optimizer, n_iters=33):
+def training_step(model, video, optimizer, n_iters=3):
 	""" We are just going to try and autoencode the video tensor. 
 	That's literally it. 
 	"""
 
 	loss = 0.0 
 	with tf.GradientTape() as tape:
-		for i in tqdm(range(n_iters)):
+		for i in range(n_iters):
 			reset = i==0
 			loss += model(video, reset_latent=reset)
 
 	grads = tape.gradient(loss, model.trainable_weights)
 	optimizer.apply_gradients(zip(grads, model.trainable_weights))
-	print(loss)
 	return loss
 
 	
@@ -79,7 +78,7 @@ def train_model(model, dataset, optimizer, dset_size, num_epochs=1, iterations_p
 					if window_end > num_tokens: 
 						break
 
-					print(f"\t{window_start} -> {window_end}")
+					print(f"WINDOW: \t{window_start} -> {window_end}")
 
 					model_input = element[:,0:50,:]
 					print(f"Model input shape: {model_input.shape}")
