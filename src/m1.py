@@ -149,13 +149,10 @@ class PAE_Encoder(keras.layers.Layer):
 							current_latent.shape = [batch_size, N, C]
 							input_array.shape    = [batch_size, M, D]
 		"""
-		# pdb.set_trace()
 		latent, input_byte_array = kv_list
 
 		# Length = # tokens in input
 		if not no_drop:
-			# print(" ** Input byte array shape: ", input_byte_array.shape)
-			# print(" ** Latent array shape: ", latent.shape)
 			droptoken_mask = tf.random.uniform([input_byte_array.shape[1]]) < self.p_droptoken
 			current_input = tf.boolean_mask(input_byte_array, droptoken_mask, axis=1)
 		else: 
@@ -245,6 +242,7 @@ class PAE_Decoder(keras.layers.Layer):
 							current_latent.shape = [batch_size, N, C]
 							input_array.shape    = [batch_size, M, D]
 		"""
+		# pdb.set_trace()
 		query_spacetime_code, latents = kv_list
 
 		reconstruction = query_spacetime_code 
