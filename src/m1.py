@@ -229,8 +229,17 @@ class PAE_Decoder(keras.layers.Layer):
 		self.mha_dropout = mha_dropout
 
 		# Component layers
-		self.tf_layers	 = [TFLayer(n_heads=self.n_heads, key_dim=self.key_dim, mha_dropout=self.mha_dropout) for i in range(self.n_blocks)]
-		self.tf_layers[self.expansion_block_num] = TFLayer(output_token_dim=self.output_patch_dim, n_heads=self.n_heads, key_dim=self.key_dim, mha_dropout=self.mha_dropout)
+		self.tf_layers = []
+
+		for i in range(self.n_blocks):
+			add_me = None
+			if i == self.expansion_block_num:
+				add_me = TFLayer(output_token_dim=self.output_patch_dim, n_heads=self.n_heads, key_dim=self.key_dim, mha_dropout=self.mha_dropout)
+			else:
+				add_me = TFLayer(n_heads=self.n_heads, key_dim=self.key_dim, mha_dropout=self.mha_dropout)
+
+			self.tf_layers.append(add_me)
+
 		self.layer_norms = [tf.keras.layers.LayerNormalization() for i in range(self.n_blocks)]
 
 
