@@ -214,7 +214,13 @@ import train_m1
 print("\t===================================================")
 print(f"\t=== TRAINING MODEL: AUTOENCODING FULL {num_frames} VIDEOS ===")
 print("\t===================================================")
+
+
 dset_size = 500
+checkpoint_period = 50
+checkpoint_path = "../training/2022_10_25/cp-{epoch:04d}.ckpt"
+
+
 optimizer = keras.optimizers.Adam(learning_rate=0.001)
 # train_m1.train_model(perceiver_ae, FlatCodedPatchedSet, optimizer, dset_size)
 
@@ -229,6 +235,8 @@ with tf.device('/GPU:1'):
 		losses.append(loss.numpy())
 		print("Loss: ", loss.numpy())
 
+
+
 		cnt+=1 
 		if cnt == dset_size:
 			break
@@ -238,6 +246,11 @@ with tf.device('/GPU:1'):
 		dct = tf.config.experimental.get_memory_info('/GPU:1')
 		current_gpu_use.append(dct["current"]*0.000001)
 		peak_gpu_use.append(dct["peak"]*0.000001)
+
+		if cnt % checkpoint_period == 0:
+			perceiver_ae.save_weights(checkpoint_path.format(epoch=cnt))
+
+
 	
 print("\nDONE TRAINING!!!")
 
