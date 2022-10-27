@@ -27,16 +27,22 @@ from tqdm import tqdm
 import pdb
 
 
-def training_step(model, video, optimizer, n_iters=3):
+def training_step(model, video, optimizer, n_iters=3, blind_iters=1):
 	""" We are just going to try and autoencode the video tensor. 
 	That's literally it. 
+
+	kwargs:
+		`blind_iters`: 	Number of iterations we give the model "for free" 
+						before its prediction error starts affecting loss. 
 	"""
 
 	loss = 0.0 
 	with tf.GradientTape() as tape:
 		for i in range(n_iters):
 			reset = i==0
-			loss += model(video, reset_latent=reset)
+			cur_loss = model(video, reset_latent=reset)
+			if i >= blind_iters:
+				loss += cur_loss
 
 	grads = tape.gradient(loss, model.trainable_weights)
 	optimizer.apply_gradients(zip(grads, model.trainable_weights))
