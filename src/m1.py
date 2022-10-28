@@ -101,8 +101,8 @@ class TFLayer(keras.layers.Layer):
 
 ## Custom layer: encoder layer. 
 class PAE_Encoder(keras.layers.Layer):
-	def __init__(self, n_blocks, p_droptoken=0.5, re_droptoken=True, 
-			tfblock_residual=True, n_heads=15, key_dim=15, mha_dropout=0.0): 
+	def __init__(self, n_blocks, tfblock_residual=True, n_heads=15, key_dim=15, 
+			mha_dropout=0.0): 
 		""" 		
 		Perceiver AE encoder layer. Queries during the call should be the 
 		current `latent` state, and the key-values should be the incoming 
@@ -118,9 +118,6 @@ class PAE_Encoder(keras.layers.Layer):
 							blocks. 
 			`n_blocks`: 	Number transformer blocks performing successive 
 							requerying of the input. 
-			`p_droptoken`: 	Portion of tokens to MAINTAIN from the input. 
-			`re_droptoken`: Do we reselect the dropped tokens every time we 
-							successively re-query the input? 
 		kwargs: 
 			`output_dim`: 	Dimensionality of the output tokens. 
 		"""
@@ -128,8 +125,6 @@ class PAE_Encoder(keras.layers.Layer):
 
 		# Recording parameters. 
 		self.n_blocks = n_blocks
-		self.p_droptoken = p_droptoken
-		self.re_droptoken = re_droptoken
 		self.tfblock_residual = tfblock_residual
 
 		self.n_heads = n_heads
@@ -141,7 +136,7 @@ class PAE_Encoder(keras.layers.Layer):
 		self.layer_norms = [tf.keras.layers.LayerNormalization() for i in range(self.n_blocks)]
 
 
-	def call(self, kv_list, no_drop=False,  verbose=False): 
+	def call(self, kv_list, verbose=False): 
 		""" Invokes the encoder module on a latent state and an input array. 
 
 		args: 
@@ -151,12 +146,7 @@ class PAE_Encoder(keras.layers.Layer):
 		"""
 		latent, input_byte_array = kv_list
 
-		# Length = # tokens in input
-		if not no_drop:
-			droptoken_mask = tf.random.uniform([input_byte_array.shape[1]]) < self.p_droptoken
-			current_input = tf.boolean_mask(input_byte_array, droptoken_mask, axis=1)
-		else: 
-			current_input = input_byte_array
+		current_input = input_byte_array
 
 		# iterating through: 
 		for i in range(self.n_blocks):
@@ -169,12 +159,6 @@ class PAE_Encoder(keras.layers.Layer):
 				latent_ = self.layer_norms[i](latent_ + latent)
 
 			latent = latent_
-
-			# If we are going to reselect tokens from the input for every 
-			# re-querying: 
-			if self.re_droptoken and not no_drop: 
-				droptoken_mask = tf.random.uniform([input_byte_array.shape[1]]) 
-				current_input = tf.boolean_mask(input_byte_array, droptoken_mask, axis=1)
 
 		return latent
 
@@ -215,6 +199,7 @@ class PAE_Decoder(keras.layers.Layer):
 						transformer blocks. 
 
 			`output_dim`: 	Dimensionality of the output tokens. 
+
 		"""
 		super(PAE_Decoder, self).__init__() 
 
@@ -227,6 +212,7 @@ class PAE_Decoder(keras.layers.Layer):
 		self.n_heads = n_heads
 		self.key_dim = key_dim
 		self.mha_dropout = mha_dropout
+
 
 		# Component layers
 		self.tf_layers = []
@@ -272,7 +258,6 @@ class PAE_Decoder(keras.layers.Layer):
 
 		return reconstruction
 				
-
 
 ## Custom layer: Latent-latent evolver 
 class PAE_Latent_Evolver(keras.layers.Layer):
@@ -332,10 +317,10 @@ class PAE_Latent_Evolver(keras.layers.Layer):
 		
 
 ## The model itself
-
 class PerceiverAE(keras.Model):
 	def __init__(self, loss_fn, encoder_module, latent_module, decoder_module, 
-			latent_dims=(90, 77), code_dim=191): 
+			latent_dims=(90, 77), code_dim=191, p_droptoken=0.5, 
+			re_droptoken=True): 
 		""" Full perceiver AE model. 
 
 		args: 
@@ -354,6 +339,10 @@ class PerceiverAE(keras.Model):
 
 			`code_dim`: 	Dimensionality of the spacetime Fourier codes used
 							in the input byte array tensor.
+			
+			`p_droptoken`: 	Portion of tokens to retain from the input tensor. 
+						This can be optionally overwritten in a `call()` 
+						invocation.		
 		"""
 		super(PerceiverAE, self).__init__()
 
@@ -366,6 +355,10 @@ class PerceiverAE(keras.Model):
 		self.decoder = decoder_module
 
 		self.code_dim = code_dim
+
+		self.p_droptoken = p_droptoken
+
+		self.droptoken_mask = None
 
 		# Latent state management:
 		# The latent tensor has shape [batch, N, C] -- that way we can have 
@@ -380,21 +373,61 @@ class PerceiverAE(keras.Model):
 	def reset_latent(self, B=1): 
 		self.latent = tf.concat([self.source_latent for i in range(B)], axis=0)
 
-	def call(self, reconstruct_me, reset_latent=False, return_prediction=False):
+	def call(self, reconstruct_me, reset_latent=False, return_prediction=False, 
+			remember_this=True, no_droptoken=False):
+		""" 
+		Returns loss on predicting the input, then optionally incorporates the 
+		novel information into the latent state. 
+
+		Args: 
+			reconstruct me: 
+				The tensor of size [batch, num_tokens, token_dim] that we are 
+				attempting to reconstruct.
+	
+		Kwargs: 
+			reset_latent:
+				Set to true to reset the model's latent state to its initial 
+				value (e.g., starting a new video/want to forget context).
+			return_prediction:
+				Set to true if you want to return the predicted value of the 
+				input tensor AND loss (loss, prediction).
+			remember_this:
+				Set to false to force the model NOT to incorporate the new 
+				information into the latent state. 
+		"""
+		p_drop = self.p_droptoken # TODO: Overwriting system with kwarg 
+
 		if reset_latent or self.latent == None: 
 			B = reconstruct_me.shape[0]
 			self.reset_latent(B=B)
+
+		# If the droptoken mask doesn't exist or it's the wrong shape, we shuffle it. 
+		if self.droptoken_mask is None or reconstruct_me.shape[1] != self.droptoken_mask.shape[0]:
+			num_tokens = reconstruct_me.shape[1]
+
+			self.droptoken_mask = np.zeros([num_tokens], dtype=np.bool)
+			portion_true = round(num_tokens * p_drop)
+			self.droptoken_mask[:portion_true] = True
+
+		np.random.shuffle(self.droptoken_mask)
+
+		# Performing the masking on `reconstruct_me` (assuming not no_droptoken)
+		if no_droptoken:
+			reconstruct_me = reconstruct_me
+		else:
+			reconstruct_me = tf.boolean_mask(reconstruct_me, self.droptoken_mask, axis=1)
 
 		# Calculate loss on trying to predict the `reconstruct_me`: 
 		spacetime_codes = reconstruct_me[:,:,-self.code_dim:]
 		prediction = self.decoder([spacetime_codes, self.latent])
 		surprise = self.loss_fn(prediction, reconstruct_me[:,:,:-self.code_dim])
 
-		# Incorporating new information into the latent 
-		self.latent = self.encoder([self.latent, reconstruct_me])
+		if remember_this:
+			# Incorporating new information into the latent 
+			self.latent = self.encoder([self.latent, reconstruct_me])
 
-		# Evolving the latent state autonomously
-		self.latent = self.latent_ev(self.latent)
+			# Evolving the latent state autonomously
+			self.latent = self.latent_ev(self.latent)
 
 		# Returning the surprise
 		if return_prediction: 

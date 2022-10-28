@@ -75,6 +75,7 @@ parser.add_argument('--k-mu-time', action='store', type=str,
 		default='64,200')
 
 
+
 ## Training parameters
 parser.add_argument('--overfit', action='store', type=int, default=-1, 
 		help='Take the first `n` videos from `mp4list` and overfit the model ' + 
@@ -94,6 +95,36 @@ parser.add_argument('--num-iters', action='store', type=int,
 parser.add_argument('--lr', action='store', type=float,
 		help="Primary optimizer learning rate. Default=0.001",
 		default=0.001)
+
+
+
+
+
+## Data traversal training parameters
+parser.add_argument("--alpha", action='store', type=float, default=0.7, 
+		help='Weighting between present timewindow prediction vs. far '+ 
+		'future prediction errors. 1 -> only present, 0 -> only future. '+
+		'Default=0.7')
+
+parser.add_argument("--blind-iters", action='store', type=int, default=1, 
+		help="Number of exposures at the beginning of procesing a video " + 
+		"sequence that is NOT counted towards loss.")
+
+parser.add_argument("--present", action='store', type=int, default=5, 
+		help="Number of frames in the `present` time window. Default=5.")
+
+parser.add_argument("--future", action='store', type=int, default=30,
+		help="Number of frames in the `future` time window. Default=30.")
+
+parser.add_argument("--future-selection-probability", action='store', type=float,
+		default=0.1, help="Probability of a token from the future time window "+
+		"being selected. Default=0.1")
+
+parser.add_argument("--window-inc", action='store', type=int, default=5,
+		help="How much the `present` and `future` time windows are incremented "+
+		"each iteration in FRAMES. Default=5.")
+
+
 
 
 ## Model parameters
@@ -197,6 +228,15 @@ sys.stderr = tee(stderrsav, err_log)
 # Data folder
 assert os.path.exists(args.data_folder), f"Invalid data folder `{args.data_folder}` -- no directory!"
 assert os.path.isdir(args.data_folder), f"Data folder `{args.data_folder}` is not a directory!"
+
+# Training loop parameters
+assert args.alpha >= 0 and args.alpha <= 1, f"Alpha must be between 0 and 1 -- received {args.alpha}"
+assert args.blind_iters < args.num_frames/args.window_inc, f"Blind iterations exceeds total number of iterations!"
+assert args.present < args.num_frames, f"Present window size mus not exceed the number of frames loaded per video!"
+assert args.future < args.num_frames,  f"Future window size mus not exceed the number of frames loaded per video!"
+
+
+
 # Frame size
 out_size = args.frame_size.split(',')
 assert len(out_size) == 2, f"Invalid `--frame-size` parameter: {args.frame_size}"
@@ -245,21 +285,60 @@ print("Physical devices: ",physical_devices)
 
 ## Acquiring the dataset!
 
-# Meta/constants -- TODO: These should be commandline arguments. 
-DATA_FOLDER = args.data_folder
-num_frames = args.num_frames
-
-batch_size = args.batch_size
-num_prefetch = args.num_prefetch
-latent_dims = [int(i) for i in args.latent_dims.split(',')]
+# Meta/constants
+latent_dims = [int(i) for i in args.latent_dims.split(',')] # potentially overwritten in perceiver_kwargs
 assert len(latent_dims) == 2, f"Invalid latent dims: `{args.latent_dims}`"
 
 # Fourier parameters
-k_space, mu_space = [int(i) for i in args.k_mu_space.split(',')]
-k_time, mu_time = [int(i) for i in args.k_mu_time.split(',')]
+_k_space, _mu_space = [int(i) for i in args.k_mu_space.split(',')]
+_k_time, _mu_time = [int(i) for i in args.k_mu_time.split(',')]
 
-# Mp4 list: 
-mp4_list = os.listdir(DATA_FOLDER)
+## Data format args: dictionary holding all the arguments we use to format 
+#  incoming video data that must match if we restore a model from a savepoint.
+data_format_args = {
+	'k_space': _k_space,
+	'mu_space': _mu_space,
+	'k_time': _k_time,
+	'mu_time': _mu_time,
+	'out_size': out_size,
+	'patch_height': patch_height,
+	'patch_width': patch_width, 
+	'patch_duration': patch_duration
+}
+
+# Now we check if we need to load in the data format arguments.
+if args.restore_from != None: 
+	# Load data (deserialize)
+	data_args_path = os.path.join(args.restore_from, 'data_format_args.pkl')
+	with open(data_args_path, 'rb') as handle:
+		data_format_args = pickle.load(handle)
+
+# Now we unpack them, regardless of whether they were overwritten.
+k_space = data_format_args['k_space']
+mu_space = data_format_args['mu_space']
+k_time = data_format_args['k_time']
+mu_time = data_format_args['mu_time']
+out_size = data_format_args['out_size']
+patch_height = data_format_args['patch_height']
+patch_width = data_format_args['patch_width']
+patch_duration = data_format_args['patch_duration']
+
+# Now we save these arguments for next time.
+print("Saving data formatting arguments...")
+data_args_path = os.path.join(args.output_folder, 'data_format_args.pkl')
+with open(data_args_path, 'wb') as handle:
+    pickle.dump(data_format_args, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+print("Done!")
+
+
+
+
+# Non-model specific data parameters
+mp4_list = os.listdir(args.data_folder)
+batch_size = args.batch_size
+num_prefetch = args.num_prefetch
+num_frames = args.num_frames
 
 if args.overfit != -1:
 	mp4_list = mp4_list[:args.overfit]
@@ -292,27 +371,32 @@ print("\n\n\n")
 print("\t========================")
 print("\t=== DATASET CREATION ===")
 print("\t========================")
-def generate_video_tensors():
-	""" This is a generator for raw video tensors of shape 
-	[num_frames, height, width, channels]. 
+def get_generator(vid_list, dat_folder, out_size, n_frames):
+	def generate_video_tensors():
+		""" This is a generator for raw video tensors of shape 
+		[num_frames, height, width, channels]. 
 
-	It uses global variables defined above under "meta/constants". These 
-	will be commandline arguments in the future. 
-	"""
-	_mp4_list = mp4_list
-	_DATA_FOLDER = DATA_FOLDER
-	_output_size = output_size
-	_num_frames = num_frames
-	while True: 
-		for fname in _mp4_list:
-			try:
-				retval = vl.get_single_video_tensor(os.path.join(_DATA_FOLDER, fname), _num_frames, output_size=_output_size)
-			except:
-				continue
-			if type(retval) == np.ndarray and retval.shape[0] == _num_frames:
-				yield np.expand_dims(retval, axis=0)
+		It uses global variables defined above under "meta/constants". These 
+		will be commandline arguments in the future. 
+		"""
+		_mp4_list = vid_list
+		_DATA_FOLDER = dat_folder 
+		_output_size = out_size 
+		_num_frames = n_frames 
+		while True: 
+			for fname in _mp4_list:
+				try:
+					retval = vl.get_single_video_tensor(os.path.join(_DATA_FOLDER, fname), _num_frames, output_size=_output_size)
+				except:
+					continue
+				if type(retval) == np.ndarray and retval.shape[0] == _num_frames:
+					yield np.expand_dims(retval, axis=0)
 
-videoset = tf.data.Dataset.from_generator(generate_video_tensors, output_signature=tf.TensorSpec(shape=[1, num_frames, *output_size, 3], dtype=tf.float32))
+	return generate_video_tensors
+
+video_generator = get_generator(mp4_list, args.data_folder, output_size, num_frames)
+
+videoset = tf.data.Dataset.from_generator(video_generator, output_signature=tf.TensorSpec(shape=[1, num_frames, *output_size, 3], dtype=tf.float32))
 print(videoset)
 
 def show_nn_sq(video_tensor, n=3, title="Some Frames", fname="bruh.png"):
@@ -394,8 +478,6 @@ if instantiation_params != None: # if we are restoring, we need to use the exact
 	encoder_kwargs = instantiation_params['encoder_kwargs']
 else:
 	n_encoder_blocks = args.n_enc_blocks
-	p_droptoken = args.p_droptoken
-	re_droptoken = not args.no_re_droptoken
 	encoder_tfres = False
 	enc_nheads = args.nheads
 	enc_keydim = args.keydim
@@ -403,8 +485,6 @@ else:
 
 	encoder_args = [n_encoder_blocks]
 	encoder_kwargs = {
-		'p_droptoken': p_droptoken, 
-		're_droptoken': re_droptoken, 
 		'tfblock_residual': encoder_tfres, 
 		'n_heads': enc_nheads, 
 		'key_dim': enc_keydim, 
@@ -466,8 +546,11 @@ else:
 
 test_decoder = m1.PAE_Decoder(*decoder_args, **decoder_kwargs)
 
-# loss function
+# Loss function definition
 mse = tf.keras.losses.MeanSquaredError()
+
+# Unpacking some params
+p_droptoken = args.p_droptoken
 
 ## Instantiating the PAE model!
 code_dim = 2*(2*k_space+1) + (2*k_time+1) # k_space = 15 and k_time = 64 -> 191
@@ -477,7 +560,8 @@ if instantiation_params != None:
 else:
 	perceiver_kwargs = {
 		'code_dim': code_dim,
-		'latent_dims': latent_dims
+		'latent_dims': latent_dims,
+		'p_droptoken': p_droptoken		
 	}
 
 perceiver_ae = m1.PerceiverAE(mse, test_encoder, test_latent_ev, test_decoder, **perceiver_kwargs)
@@ -516,10 +600,17 @@ print("Done setting up perceiver_ae model!")
 
 
 
-print("\t===================================================")
-print(f"\t=== TRAINING MODEL: AUTOENCODING FULL {num_frames} VIDEOS ===")
-print("\t===================================================")
+print("\t=========================================================")
+print(f"\t=== TRAINING MODEL: AUTOENCODING FULL {num_frames} FRAME VIDEOS ===")
+print("\t=========================================================")
 
+
+# Calculating tokens per frame 
+num_width = output_size[1] // patch_width
+num_height = output_size[0] // patch_height
+
+tokens_per_frame = (num_width * num_height)/patch_duration
+print("Tokens per frame: ", tokens_per_frame)
 
 dset_size = args.num_iters
 checkpoint_period = args.ckpt_period
@@ -532,17 +623,37 @@ if not os.path.exists(os.path.dirname(checkpoint_path)):
 optimizer = keras.optimizers.Adam(learning_rate=args.lr)
 # train_m1.train_model(perceiver_ae, FlatCodedPatchedSet, optimizer, dset_size)
 
+
+
+## Predictive training args
+predictive_training_args = [tokens_per_frame]
+predictive_training_kwargs = {
+	'alpha': args.alpha,
+	'blind_iters': args.blind_iters,
+	'present_time_window': args.present,
+	'prediction_time_window': args.future, 
+	'prob_prediction_select': args.future_selection_probability, 
+	'window_increment': args.window_inc
+}
+
+
 losses = []
+present_losses = []
+future_losses = []
+
 current_gpu_use = []
 peak_gpu_use = []
 
 with tf.device('/GPU:1'):
-	tf.config.experimental.reset_memory_stats('/GPU:1')
 	cnt=0
 	for el in tqdm(FlatCodedPatchedSet, total=dset_size):
-		loss = train_m1.training_step(perceiver_ae, el, optimizer)
-		losses.append(loss.numpy())
-		print("Loss: ", loss.numpy())
+		tf.config.experimental.reset_memory_stats('/GPU:1')
+		# loss = train_m1.training_step(perceiver_ae, el, optimizer)
+		surprise_loss, future_loss, total_loss = train_m1.predictive_training_step(perceiver_ae, el, optimizer, *predictive_training_args, **predictive_training_kwargs)
+		losses.append(total_loss.numpy())
+		present_losses.append(surprise_loss.numpy())
+		future_losses.append(future_loss.numpy())
+		# print("Loss: ", total_loss.numpy())
 
 		cnt+=1 
 		if cnt == dset_size:
@@ -567,8 +678,11 @@ print("\nDONE TRAINING!!!")
 
 print("\nPlotting autoencoding losses over time.")
 
-plt.plot(losses)
+plt.plot(losses, label=f'{args.alpha}-weighted')
+plt.plot(present_losses, label=f'present')
+plt.plot(future_losses, label=f'future')
 plt.title(f"Surprises over Time -- Autoencoding {num_frames} Frames")
+plt.legend()
 plt.savefig(os.path.join(args.output_folder, "loss.png"))
 plt.close()
 
