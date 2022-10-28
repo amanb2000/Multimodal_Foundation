@@ -88,7 +88,8 @@ def get_single_video_tensor(video_path, n_frames, output_size = (256,256), hard_
 	src = cv2.VideoCapture(str(video_path))
 	video_length = src.get(cv2.CAP_PROP_FRAME_COUNT)
 
-	start = 0 # starting frame
+	start = random.randint(0, video_length-n_frames-1) # starting frame
+	# print(f"Starting from {start} in video with {video_length} frames for {n_frames}!")
 
 	if n_frames == -1: 
 		n_frames = int(video_length)
