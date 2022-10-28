@@ -636,6 +636,11 @@ predictive_training_kwargs = {
 	'window_increment': args.window_inc
 }
 
+print("Caching the predictive training arguments!")
+predictive_training_args_output_path = os.path.join(args.output_folder, 'predictive_training_kwargs.pkl')
+with open(predictive_training_args_output_path, 'wb') as handle:
+    pickle.dump(predictive_training_kwargs, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
 
 losses = []
 present_losses = []
