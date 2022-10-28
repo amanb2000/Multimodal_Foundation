@@ -14,7 +14,9 @@ import collections
 import math
 import argparse
 import datetime
+import pickle
 import pdb
+
 
 ## Parsing commandline arguments -- must occur here because tensorflow 
 #  imports may change based on `--cpu-only` flag.
@@ -59,6 +61,7 @@ parser.add_argument('--batch-size', action='store', type=int,
 		'Default=10',
 		default=10)
 
+
 parser.add_argument('--num-prefetch', action='store', type=int, 
 		help='Number of dataset batches that are pre-fetched. Default=4.',
 		default=4)
@@ -73,6 +76,9 @@ parser.add_argument('--k-mu-time', action='store', type=str,
 
 
 ## Training parameters
+parser.add_argument('--overfit', action='store', type=int, default=-1, 
+		help='Take the first `n` videos from `mp4list` and overfit the model ' + 
+		'on those. Default=-1 (i.e. use the full dataset)')
 parser.add_argument('--cpu-only', action='store_true', 
 		help='Include this flag to force training to use only CPU.')
 
@@ -92,18 +98,26 @@ parser.add_argument('--lr', action='store', type=float,
 
 ## Model parameters
 parser.add_argument('--restore-from', action='store', type=str, default=None,
-		help='Path to a checkpoint file. Default=None (i.e.,do not restore '+
-		'from checkpoint).')
+		help='Path to an experiment directory. We will look at the '+
+		'`checkpoints` subdirectory and start from the most recent one.')
+
+parser.add_argument('--latent-dims', action='store', type=str, default='700,100', 
+		help='Dimensions of the latent state/predictive code tensor in the '+
+		'model. Comma separated `num_tokens,token_dim`. Default=700,10')
 
 parser.add_argument('--nheads', action='store', type=int, default=15)
+
 parser.add_argument('--keydim', action='store', type=int, default=15)
+
 parser.add_argument('--mhadropout', action='store', type=float, default=0.0)
+
+
 
 # Encoder
 parser.add_argument('--n-enc-blocks', action='store', type=int, default=3, 
 		help="Number of encoder blocks in the model. Default=3.")
 
-parser.add_argument('--p-droptoken', action='store', type='float', default=0.5,
+parser.add_argument('--p-droptoken', action='store', type=float, default=0.5,
 		help='Expected portion of input tokens retained on each exposure of ' + 
 		'the latent state. Default=0.5.')
 
@@ -180,7 +194,6 @@ sys.stderr = tee(stderrsav, err_log)
 
 
 
-
 # Data folder
 assert os.path.exists(args.data_folder), f"Invalid data folder `{args.data_folder}` -- no directory!"
 assert os.path.isdir(args.data_folder), f"Data folder `{args.data_folder}` is not a directory!"
@@ -211,6 +224,12 @@ import video_preprocess as vp
 import train_m1
 
 
+# Restore from 
+assert args.restore_from == None or os.path.exists(args.restore_from), f"Checkpoint folder DNE: `{args.restore_from}`."
+latest = None
+
+if args.restore_from != None:
+	latest = tf.train.latest_checkpoint(os.path.join(args.restore_from, 'checkpoints'))
 
 ## Getting the GPU set up
 print("\n\n\n")
@@ -232,6 +251,8 @@ num_frames = args.num_frames
 
 batch_size = args.batch_size
 num_prefetch = args.num_prefetch
+latent_dims = [int(i) for i in args.latent_dims.split(',')]
+assert len(latent_dims) == 2, f"Invalid latent dims: `{args.latent_dims}`"
 
 # Fourier parameters
 k_space, mu_space = [int(i) for i in args.k_mu_space.split(',')]
@@ -239,6 +260,9 @@ k_time, mu_time = [int(i) for i in args.k_mu_time.split(',')]
 
 # Mp4 list: 
 mp4_list = os.listdir(DATA_FOLDER)
+
+if args.overfit != -1:
+	mp4_list = mp4_list[:args.overfit]
 
 print("\n\n\n")
 print("\t=========================")
@@ -249,7 +273,17 @@ print("batch_size: ", batch_size)
 print("output_size: ", output_size)
 print("Patch h/w/d: ", patch_height, patch_width, patch_duration)
 print("k, mu for space, time: ", (k_space, mu_space), (k_time, mu_time))
-print("mp4_list[:10] -- ", mp4_list[:10])
+print("Latent dims: ", latent_dims)
+
+if args.restore_from != None: 
+	print("Restoring from -- ", args.restore_from)
+	print("\tMost recent checkpoint: ", latest)
+
+if args.overfit != -1:
+	print(f"\n\n\nOVERFITTING TO FIRST {args.overfit} ELEMENTS!!!")
+else: 
+	print("mp4_list[:10] -- ", mp4_list[:10])
+
 
 
 
@@ -341,43 +375,138 @@ print("\t========================")
 print("\t=== SETTING UP MODEL ===")
 print("\t========================")
 
+instantiation_params = None
+if args.restore_from != None: 
+	# Load data (deserialize)
+	instant_param_pth = os.path.join(args.restore_from, 'instantiation_params.pkl')
+	with open(instant_param_pth, 'rb') as handle:
+		instantiation_params = pickle.load(handle)
+
 ## Setting up the component modules of the top-level PAE model.
 # Encoder 
-n_encoder_blocks = args.n_enc_blocks
-p_droptoken = args.p_droptoken
-re_droptoken = not args.no_re_droptoken
-encoder_tfres = False
-enc_nheads = args.nheads
-enc_keydim = args.keydim
-enc_mhadropout = args.mhadropout
-test_encoder = m1.PAE_Encoder(n_encoder_blocks, p_droptoken=p_droptoken, re_droptoken=re_droptoken, tfblock_residual=encoder_tfres, n_heads=enc_nheads, key_dim=enc_keydim, mha_dropout=enc_mhadropout)
+
+# Getting arguments 
+encoder_args = None
+encoder_kwargs = None
+
+if instantiation_params != None: # if we are restoring, we need to use the exact same args.
+	encoder_args = instantiation_params['encoder_args']
+	encoder_kwargs = instantiation_params['encoder_kwargs']
+else:
+	n_encoder_blocks = args.n_enc_blocks
+	p_droptoken = args.p_droptoken
+	re_droptoken = not args.no_re_droptoken
+	encoder_tfres = False
+	enc_nheads = args.nheads
+	enc_keydim = args.keydim
+	enc_mhadropout = args.mhadropout
+
+	encoder_args = [n_encoder_blocks]
+	encoder_kwargs = {
+		'p_droptoken': p_droptoken, 
+		're_droptoken': re_droptoken, 
+		'tfblock_residual': encoder_tfres, 
+		'n_heads': enc_nheads, 
+		'key_dim': enc_keydim, 
+		'mha_dropout': enc_mhadropout
+	}
+
+test_encoder = m1.PAE_Encoder(*encoder_args, **encoder_kwargs)
 
 # Latent evolver 
-n_latentev_blocks = args.n_latent_blocks
-latent_distinct_blocks = args.distinct_latent
-latent_residual = False
-latent_nheads = args.nheads
-latent_keydim = args.keydim
-latent_mhadropout = args.mhadropout
-test_latent_ev = m1.PAE_Latent_Evolver(n_latentev_blocks, distinct_blocks=latent_distinct_blocks, tfblock_residual=latent_residual, n_heads=latent_nheads, key_dim = latent_keydim, mha_dropout=latent_mhadropout)
+latent_ev_args = None
+latent_ev_kwargs = None
+
+if instantiation_params != None: 
+	latent_ev_args = instantiation_params['latent_ev_args']
+	latent_ev_kwargs = instantiation_params['latent_ev_kwargs']
+else:	
+	n_latentev_blocks = args.n_latent_blocks
+	latent_distinct_blocks = args.distinct_latent
+	latent_residual = False
+	latent_nheads = args.nheads
+	latent_keydim = args.keydim
+	latent_mhadropout = args.mhadropout
+
+	latent_ev_args = [n_latentev_blocks]
+	latent_ev_kwargs = {
+		'distinct_blocks': latent_distinct_blocks, 
+		'tfblock_residual': latent_residual, 
+		'n_heads': latent_nheads, 
+		'key_dim': latent_keydim, 
+		'mha_dropout': latent_mhadropout
+	}
+
+test_latent_ev = m1.PAE_Latent_Evolver(*latent_ev_args,**latent_ev_kwargs) 
 
 
 # decoder
-output_patch_dim = patch_duration * patch_height * patch_width * 3
-n_decoder_blocks = args.n_dec_blocks
-expansion_block_num = args.dec_expansion_block
-decoder_tfres = False
-dec_nheads = args.nheads
-dec_keydim = args.keydim
-dec_mhadropout = args.mhadropout
-test_decoder = m1.PAE_Decoder(output_patch_dim, n_decoder_blocks, expansion_block_num, tfblock_residual=decoder_tfres, n_heads=dec_nheads, key_dim=dec_keydim, mha_dropout=dec_mhadropout)
+decoder_args = None
+decoder_kwargs = None
+
+if instantiation_params != None:
+	decoder_args = instantiation_params['decoder_args']
+	decoder_kwargs = instantiation_params['decoder_kwargs']
+else:
+	output_patch_dim = patch_duration * patch_height * patch_width * 3
+	n_decoder_blocks = args.n_dec_blocks
+	expansion_block_num = args.dec_expansion_block
+	decoder_tfres = False
+	dec_nheads = args.nheads
+	dec_keydim = args.keydim
+	dec_mhadropout = args.mhadropout
+
+	decoder_args = [output_patch_dim, n_decoder_blocks, expansion_block_num]
+	decoder_kwargs = {
+		'tfblock_residual': decoder_tfres, 
+		'n_heads': dec_nheads, 
+		'key_dim': dec_keydim, 
+		'mha_dropout': dec_mhadropout
+	}
+
+test_decoder = m1.PAE_Decoder(*decoder_args, **decoder_kwargs)
 
 # loss function
 mse = tf.keras.losses.MeanSquaredError()
 
 ## Instantiating the PAE model!
 code_dim = 2*(2*k_space+1) + (2*k_time+1) # k_space = 15 and k_time = 64 -> 191
-perceiver_ae = m1.PerceiverAE(mse, test_encoder, test_latent_ev, test_decoder, code_dim=code_dim)
+
+if instantiation_params != None: 
+	perceiver_kwargs = instantiation_params['perceiver_kwargs']
+else:
+	perceiver_kwargs = {
+		'code_dim': code_dim,
+		'latent_dims': latent_dims
+	}
+
+perceiver_ae = m1.PerceiverAE(mse, test_encoder, test_latent_ev, test_decoder, **perceiver_kwargs)
+
+
+## Saving arguments for instantiating the perceiver!
+instantiation_params = {
+	'encoder_args': encoder_args,
+	'encoder_kwargs': encoder_kwargs,
+	'latent_ev_args': latent_ev_args,
+	'latent_ev_kwargs': latent_ev_kwargs,
+	'decoder_args': decoder_args,
+	'decoder_kwargs': decoder_kwargs,
+	'perceiver_kwargs': perceiver_kwargs
+}
+
+instantiation_params_output_pth = os.path.join(args.output_folder, 'instantiation_params.pkl')
+print(f"\nSaving the instantiation parameters to `{instantiation_params_output_pth}`")
+
+# Store data (serialize)
+with open(instantiation_params_output_pth, 'wb') as handle:
+    pickle.dump(instantiation_params, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+print("Done!")
+
+
+if args.restore_from != None: 
+	print(f"Restoring model from {latest}!")
+	perceiver_ae.load_weights(latest)
 
 perceiver_ae.reset_latent()
 
@@ -420,6 +549,10 @@ with tf.device('/GPU:1'):
 			break
 		elif cnt == 2:
 			print(perceiver_ae.summary())
+			print("PERCEIVER N, C: ", perceiver_ae.N, perceiver_ae.C)
+			print("Latent shape: ", perceiver_ae.latent.shape)
+			os.mkdir(os.path.join(args.output_folder, "full_model"))
+			# perceiver_ae.save(os.path.join(args.output_folder, "full_model/iter2"))
 
 		dct = tf.config.experimental.get_memory_info('/GPU:1')
 		current_gpu_use.append(dct["current"]*0.000001)
