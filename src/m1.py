@@ -328,14 +328,13 @@ class Latent_Initializer(keras.layers.Layer):
 		self.N = N
 		self.C = C
 
-		if mode == 'random':
-			self.latent_init = tf.random.normal([1, self.N, self.C])
-		elif mode == 'zeros':
-			self.latent_init = tf.random.normal([1, self.N, self.C])
-		else: 
-			assert False, f'Invalid mode for latent initializer: {mode}'
+		self.latent_init = self.add_weight(
+			shape=(1, self.N, self.C), initializer=mode, trainable=True, 
+			name='latentinittensor'
+		)
+		print("Initialized latent_init successfully!!")
 	
-	def call(self):
+	def call(self, nthing):
 		return self.latent_init
 
 ## The model itself
@@ -393,7 +392,7 @@ class PerceiverAE(keras.Model):
 		self.latent = None
 
 	def reset_latent(self, B=1): 
-		_latent_init = self.latent_init()
+		_latent_init = self.latent_init(None)
 		self.latent = tf.concat([_latent_init for i in range(B)], axis=0)
 
 	def call(self, reconstruct_me, reset_latent=False, return_prediction=False, 
