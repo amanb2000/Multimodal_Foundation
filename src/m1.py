@@ -316,6 +316,28 @@ class PAE_Latent_Evolver(keras.layers.Layer):
 		return latent
 		
 
+class Latent_Initializer(keras.layers.Layer):
+	def __init__(self, N, C, mode='zeros'):
+		""" Layer to encapsulate learnable initialization for the latent 
+		state. 
+
+		This literally just holds an `N x C` tensor. `call()` just outputs 
+		this tensor.
+		"""
+		super(Latent_Initializer, self).__init__()
+		self.N = N
+		self.C = C
+
+		if mode == 'random':
+			self.latent_init = tf.random.normal([1, self.N, self.C])
+		elif mode == 'zeros':
+			self.latent_init = tf.random.normal([1, self.N, self.C])
+		else: 
+			assert False, f'Invalid mode for latent initializer: {mode}'
+	
+	def call(self):
+		return self.latent_init
+
 ## The model itself
 class PerceiverAE(keras.Model):
 	def __init__(self, loss_fn, encoder_module, latent_module, decoder_module, 
@@ -367,11 +389,12 @@ class PerceiverAE(keras.Model):
 		# batches. 
 
 		# In the future we will make `source_latent` a learnable parameter... 
-		self.source_latent = tf.random.normal([1, self.N, self.C])
+		self.latent_init = Latent_Initializer(self.N, self.C, mode='zeros')
 		self.latent = None
 
 	def reset_latent(self, B=1): 
-		self.latent = tf.concat([self.source_latent for i in range(B)], axis=0)
+		_latent_init = self.latent_init()
+		self.latent = tf.concat([_latent_init for i in range(B)], axis=0)
 
 	def call(self, reconstruct_me, reset_latent=False, return_prediction=False, 
 			remember_this=True, no_droptoken=False):
