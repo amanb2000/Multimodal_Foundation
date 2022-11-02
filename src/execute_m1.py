@@ -132,9 +132,9 @@ parser.add_argument('--restore-from', action='store', type=str, default=None,
 		help='Path to an experiment directory. We will look at the '+
 		'`checkpoints` subdirectory and start from the most recent one.')
 
-parser.add_argument('--latent-dims', action='store', type=str, default='700,100', 
+parser.add_argument('--latent-dims', action='store', type=str, default='100,700', 
 		help='Dimensions of the latent state/predictive code tensor in the '+
-		'model. Comma separated `num_tokens,token_dim`. Default=700,10')
+		'model. Comma separated `num_tokens,token_dim`. Default=100,700')
 
 parser.add_argument('--nheads', action='store', type=int, default=15)
 
@@ -396,7 +396,14 @@ def get_generator(vid_list, dat_folder, out_size, n_frames):
 
 video_generator = get_generator(mp4_list, args.data_folder, output_size, num_frames)
 
-videoset = tf.data.Dataset.from_generator(video_generator, output_signature=tf.TensorSpec(shape=[1, num_frames, *output_size, 3], dtype=tf.float32))
+# pdb.set_trace()
+
+videoset_ = lambda: tf.data.Dataset.from_generator(video_generator, output_signature=tf.TensorSpec(shape=[1, num_frames, *output_size, 3], dtype=tf.float32))
+
+videoset = tf.data.Dataset.range(1).interleave(
+        lambda _: videoset_(),
+        num_parallel_calls=tf.data.AUTOTUNE
+    )
 print(videoset)
 
 def show_nn_sq(video_tensor, n=3, title="Some Frames", fname="bruh.png"):
@@ -676,6 +683,8 @@ with tf.device('/GPU:1'):
 
 		if cnt % checkpoint_period == 0:
 			perceiver_ae.save_weights(checkpoint_path.format(epoch=cnt))
+
+		print("Norm of `perceiver_ae.latent_init()`: ", tf.norm(perceiver_ae.latent_init(None)).numpy() )
 
 
 	
