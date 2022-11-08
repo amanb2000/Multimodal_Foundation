@@ -12,7 +12,7 @@ from multiprocessing import Pool
 import random
 import time
 
-# import tensorflow as tf
+import tensorflow as tf
 import cv2
 import numpy as np
 
@@ -133,6 +133,7 @@ def load_video_batch(path_list, num_frames, batch_size, output_size=(120,180),
 		video_tensors = video_clips
 
 	batch_tensor = np.concatenate(video_tensors, axis=0)
+	batch_tensor = batch_tensor.astype(np.float16)
 	return video_tensors 
 
 def get_generator(path_list, out_size, n_frames, batch_size, pool_size=30, thread_per_vid=1):
@@ -156,7 +157,7 @@ def get_generator(path_list, out_size, n_frames, batch_size, pool_size=30, threa
 			batch_tensor = np.concatenate(batch_tensor, axis=0)
 			yield batch_tensor
 
-	return generate_video_tensors()
+	return generate_video_tensors
 
 
 if __name__ == "__main__":
@@ -165,20 +166,26 @@ if __name__ == "__main__":
 	path_list = [os.path.join(DATA_FOLDER, i) for i in mp4_list]
 
 
-	NUM_FRAMES = 30 
-	BATCH_SIZE = 100
+	NUM_FRAMES = 30
+	BATCH_SIZE = 10
 	RESOLUTION = (120,180)
 	POOL_SIZE = 30
-	THREAD_PER_VID = 30
+	THREAD_PER_VID = 1
+	NUM_PREFETCH = 5
 
 	vid_generator = get_generator(path_list, RESOLUTION, NUM_FRAMES, BATCH_SIZE, 
 			pool_size=POOL_SIZE, thread_per_vid=THREAD_PER_VID)
+	
+	videoset = tf.data.Dataset.from_generator(vid_generator, output_signature=tf.TensorSpec(shape=[BATCH_SIZE,NUM_FRAMES, *RESOLUTION, 3], dtype=tf.float16))
+	videoset = videoset.prefetch(NUM_PREFETCH)
 
 	start = time.time()
-	for element in vid_generator: 
+	for element in videoset: 
+	# for element in vid_generator(): 
 		end = time.time()
 		print("Took: ", end-start)
 		print("\t", element.shape)
+		time.sleep(1.0)
 		start = time.time()
 
 
