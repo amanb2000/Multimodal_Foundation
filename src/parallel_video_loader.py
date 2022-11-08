@@ -135,7 +135,7 @@ def load_video_batch(path_list, num_frames, batch_size, output_size=(120,180),
 	batch_tensor = np.concatenate(video_tensors, axis=0)
 	return video_tensors 
 
-def get_generator(path_list, out_size, n_frames):
+def get_generator(path_list, out_size, n_frames, batch_size, pool_size=30, thread_per_vid=1):
 	def generate_video_tensors():
 		""" This is a generator for raw video tensors of shape 
 		[num_frames, height, width, channels]. 
@@ -144,16 +144,19 @@ def get_generator(path_list, out_size, n_frames):
 		will be commandline arguments in the future. 
 		"""
 		_path_list = path_list 
-		_DATA_FOLDER = dat_folder 
 		_output_size = out_size 
 		_num_frames = n_frames 
+		_batch_size = batch_size
+		_pool_size = 30
+		_thread_per_vid = thread_per_vid
 		while True: 
 			# retval = vl.get_single_video_tensor(os.path.join(_DATA_FOLDER, fname), _num_frames, output_size=_output_size)
-			batch_tensor = load_video_batch(_path_list, _num_frames, BATCH_SIZE, output_size=RESOLUTION, 
-					pool_size=POOL_SIZE, thread_per_video=THREAD_PER_VID)
+			batch_tensor = load_video_batch(_path_list, _num_frames, _batch_size, output_size=_output_size, 
+					pool_size=_pool_size, thread_per_video=_thread_per_vid)
 			batch_tensor = np.concatenate(batch_tensor, axis=0)
+			yield batch_tensor
 
-	return generate_video_tensors
+	return generate_video_tensors()
 
 
 if __name__ == "__main__":
@@ -162,17 +165,26 @@ if __name__ == "__main__":
 	path_list = [os.path.join(DATA_FOLDER, i) for i in mp4_list]
 
 
-	NUM_FRAMES = 100 
-	BATCH_SIZE = 30
+	NUM_FRAMES = 30 
+	BATCH_SIZE = 100
 	RESOLUTION = (120,180)
 	POOL_SIZE = 30
-	THREAD_PER_VID = 1
+	THREAD_PER_VID = 30
+
+	vid_generator = get_generator(path_list, RESOLUTION, NUM_FRAMES, BATCH_SIZE, 
+			pool_size=POOL_SIZE, thread_per_vid=THREAD_PER_VID)
+
+	start = time.time()
+	for element in vid_generator: 
+		end = time.time()
+		print("Took: ", end-start)
+		print("\t", element.shape)
+		start = time.time()
+
 
 	for k in range(100):
 		start = time.time()
-		batch_tensor = load_video_batch(path_list, NUM_FRAMES, BATCH_SIZE, output_size=RESOLUTION, 
-				pool_size=POOL_SIZE, thread_per_video=THREAD_PER_VID)
-		batch_tensor = np.concatenate(batch_tensor, axis=0)
+		# batch_tensor = vid_generator()
 		print("batch tensor: ", batch_tensor.shape)
 		end = time.time()
 		print(f"TOOK {end-start} SECONDS")
