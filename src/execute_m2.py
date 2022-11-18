@@ -35,9 +35,9 @@ os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 
 ## Parsing commandline arguments before importing TensorFlow.
 print("\n\n\n")
-print("\t=====================================")
-print("\t=== PARSING COMMANDLINE ARGUMENTS ===")
-print("\t=====================================")
+print("\t=======================================")
+print("\t=== 1 PARSING COMMANDLINE ARGUMENTS ===")
+print("\t=======================================")
 
 parser = argparse.ArgumentParser(description='Train model M1 (perceiver AE).')
 
@@ -80,6 +80,16 @@ parser.add_argument('--k-mu-space', action='store', type=str,
 parser.add_argument('--k-mu-time', action='store', type=str,
 		help='`k,mu` for temporal Fourier codes. Default=`64,200`.',
 		default='64,200')
+
+## Video loader args
+parser.add_argument('--pool-size', action='store', type=int, 
+		help='Number of CPU threads allocated to the video loading.',
+		default=20)
+
+parser.add_argument('--threads-per-vid', action='store', type=int, 
+		help='Number of threads for loading an individual video. Only '+
+		'use this for long videos.', 
+		default=1)
 
 
 ## Training parameters
@@ -168,6 +178,231 @@ parser.add_argument('--dec-expansion-block', action='store', type=int, default=2
 args = parser.parse_args() 
 print("ARGS: \n\t", args)
 
-# TODO: num_frames = present + future
+# TODO: num_frames = present + future (done)
 # 		distinct_latent -> identical_latent
-# 		p_droptoken 	-> mask_rate
+# 		p_droptoken 	-> mask_ratio
+#
+#		no_redroptoken 	-> DNE
+
+
+
+print("\n\n\n")
+print("\t================================================")
+print("\t=== SETTING UP OUTPUT FOLDER/LOGGING/ARG VAL ===")
+print("\t================================================")
+
+
+## Output folder for experiment information.
+NOW = None
+if args.output_folder.endswith('{now}'):
+	args.output_folder = args.output_folder[:-5]
+	print(args.output_folder)
+	ct = str(datetime.datetime.now()).replace(' ', '_')
+	ct = ct.split('.')[0]
+	print("\n",ct)
+	NOW = ct
+	args.output_folder = os.path.join(args.output_folder, ct)
+if not os.path.exists(args.output_folder):
+	os.makedirs(args.output_folder)
+
+
+## Setting up logging (screen + log files).
+class tee :
+    def __init__(self, _fd1, _fd2) :
+        self.fd1 = _fd1
+        self.fd2 = _fd2
+
+    def __del__(self) :
+        if self.fd1 != sys.stdout and self.fd1 != sys.stderr :
+            self.fd1.close()
+        if self.fd2 != sys.stdout and self.fd2 != sys.stderr :
+            self.fd2.close()
+
+    def write(self, text) :
+        self.fd1.write(text)
+        self.fd2.write(text)
+
+    def flush(self) :
+        self.fd1.flush()
+        self.fd2.flush()
+
+stdoutsav = sys.stdout
+out_log = open(os.path.join(args.output_folder, "stdout.log"), "w")
+sys.stdout = tee(stdoutsav, out_log)
+
+stderrsav = sys.stderr
+err_log = open(os.path.join(args.output_folder, "stderr.log"), "w")
+sys.stderr = tee(stderrsav, err_log)
+
+
+## Validating args
+# Checking data 
+assert os.path.exists(args.data_folder), f"Invalid data folder `{args.data_folder}` -- no directory!"
+assert os.path.isdir(args.data_folder), f"Data folder `{args.data_folder}` is not a directory!"
+
+# Training loop parameters
+assert args.alpha >= 0 and args.alpha <= 1, f"Alpha must be between 0 and 1 -- received {args.alpha}"
+assert args.blind_iters < args.num_frames/args.window_inc, f"Blind iterations exceeds total number of iterations!"
+assert args.present < args.num_frames, f"Present window size mus not exceed the number of frames loaded per video!"
+assert args.future < args.num_frames,  f"Future window size mus not exceed the number of frames loaded per video!"
+
+# Frame size
+out_size = args.frame_size.split(',')
+assert len(out_size) == 2, f"Invalid `--frame-size` parameter: {args.frame_size}"
+output_size = [int(i) for i in out_size]
+# Patch size
+patch_hwd = args.patch_hwd.split(',')
+assert len(patch_hwd) == 3, f"Invalid `--patch-hwd` parameter: {args.patch_hwd}"
+patch_height, patch_width, patch_duration = [int(i) for i in patch_hwd]
+
+# Checkpoint restoration 
+assert args.restore_from == None or os.path.exists(args.restore_from), f"Checkpoint folder DNE: `{args.restore_from}`."
+
+## Import Box II
+# Updating CPU environment variable before importing Tensorflow.
+if args.cpu_only:
+	os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+
+import tensorflow as tf 
+from tensorflow import keras
+import numpy as np
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+import cv2
+import imageio
+
+import m1
+import video_loader as vl
+import video_preprocess as vp
+import train_m1
+import parallel_video_loader as pvl
+
+## Reducing GPU's to 1 if needed. 
+if args.one_gpu:
+	gpus = tf.config.list_physical_devices('GPU')
+	if gpus:
+		# Restrict TensorFlow to only use the first GPU
+		try:
+			tf.config.set_visible_devices(gpus[1], 'GPU')
+			logical_gpus = tf.config.list_logical_devices('GPU')
+			print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
+		except RuntimeError as e:
+			# Visible devices must be set before GPUs have been initialized
+			print(e)
+
+
+
+## Getting the GPU set up
+print("\n\n\n")
+print("\t========================")
+print("\t=== GPU DEVICE SETUP ===")
+print("\t========================")
+
+physical_devices = tf.config.list_physical_devices("GPU")
+# for device in physical_devices:
+#     tf.config.experimental.set_memory_growth(device, True)
+print("Physical devices: ",physical_devices)
+
+
+
+
+
+print("\n\n\n")
+print("\t=============================")
+print("\t=== DATA FORMAT ARG PARSE ===")
+print("\t=============================")
+## Checkpoint args/restore from 
+latest = None
+if args.restore_from != None:
+	latest = tf.train.latest_checkpoint(os.path.join(args.restore_from, 'checkpoints'))
+
+
+# Meta/constants
+latent_dims = [int(i) for i in args.latent_dims.split(',')] # potentially overwritten in perceiver_kwargs
+assert len(latent_dims) == 2, f"Invalid latent dims: `{args.latent_dims}`"
+
+# Fourier parameters
+_k_space, _mu_space = [int(i) for i in args.k_mu_space.split(',')]
+_k_time, _mu_time = [int(i) for i in args.k_mu_time.split(',')]
+
+## Data format args: dictionary holding all the arguments we use to format 
+#  incoming video data that must match if we restore a model from a savepoint.
+data_format_args = {
+	'k_space': _k_space,
+	'mu_space': _mu_space,
+	'k_time': _k_time,
+	'mu_time': _mu_time,
+	'out_size': out_size,
+	'patch_height': patch_height,
+	'patch_width': patch_width, 
+	'patch_duration': patch_duration
+}
+
+# Now we check if we need to load in the data format arguments.
+if args.restore_from != None: 
+	# Load data (deserialize)
+	print("Restoring data args from checkpoint folder...")
+	data_args_path = os.path.join(args.restore_from, 'data_format_args.pkl')
+	with open(data_args_path, 'rb') as handle:
+		data_format_args = pickle.load(handle)
+
+# Now we unpack them, regardless of whether they were overwritten.
+k_space = data_format_args['k_space']
+mu_space = data_format_args['mu_space']
+k_time = data_format_args['k_time']
+mu_time = data_format_args['mu_time']
+out_size = data_format_args['out_size']
+patch_height = data_format_args['patch_height']
+patch_width = data_format_args['patch_width']
+patch_duration = data_format_args['patch_duration']
+
+# Now we save these arguments for next time.
+print("Saving data formatting arguments...")
+data_args_path = os.path.join(args.output_folder, 'data_format_args.pkl')
+with open(data_args_path, 'wb') as handle:
+    pickle.dump(data_format_args, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+print("Done!")
+
+
+
+# Non-model specific data parameters
+mp4_list = os.listdir(args.data_folder)
+batch_size = args.batch_size
+num_prefetch = args.num_prefetch
+num_frames = args.present+args.future
+
+if args.overfit != -1:
+	mp4_list = mp4_list[:args.overfit]
+
+
+
+print("DATASET META INFO")
+print("\tnum_frames: ", num_frames)
+print("\tbatch_size: ", batch_size)
+print("\toutput_size: ", output_size)
+print("\tPatch h/w/d: ", patch_height, patch_width, patch_duration)
+print("\tk, mu for space, time: ", (k_space, mu_space), (k_time, mu_time))
+print("\tLatent dims: ", latent_dims)
+
+if args.restore_from != None: 
+	print("\tRestoring from -- ", args.restore_from)
+	print("\tMost recent checkpoint: ", latest)
+
+if args.overfit != -1:
+	print(f"\tOverfitting to the first {args.overfit} elements.")
+else: 
+	print("\tmp4_list[:10] -- ", mp4_list[:10])
+
+
+print("\n\n\n\t==========================")
+print("\t=== VIDEO LOADER SETUP ===")
+print("\t==========================")
+
+
+DATA_FOLDER = "../datasets/downloads"
+path_list = [os.path.join(DATA_FOLDER, i) for i in mp4_list]
+
+vid_generator = pvl.get_generator(path_list, output_size, num_frames, batch_size, 
+			pool_size=args.pool_size, thread_per_vid=args.threads_per_vid)
+
