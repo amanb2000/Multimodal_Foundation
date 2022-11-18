@@ -80,11 +80,14 @@ def add_spacetime_codes(patch_tensor, k_space=15, mu_space=20,
 						mu/2 is the maximum frequency -> we can resolve 
 						positional differences at up to mu/2 frequency.
 	"""
-	_, n_times, n_heights, n_widths, _ = patch_tensor.shape
+	batch_size, n_times, n_heights, n_widths, _ = patch_tensor.shape
 	codes = fourier_tensor = get_spacetime_codes(n_times, n_heights, n_widths,
 		k_space=k_space, mu_space=mu_space, k_time=k_time, mu_time=mu_time)
-	
+
+	codes = tf.cast(codes, patch_tensor.dtype)	
 	codes = tf.expand_dims(codes, 0)
+	codes = tf.repeat(codes, batch_size, axis=0)
+
 
 	return tf.concat([patch_tensor, codes], axis=-1)
 
