@@ -12,6 +12,7 @@ from multiprocessing import Pool
 import random
 import time
 
+from tqdm import tqdm
 import tensorflow as tf
 import cv2
 import numpy as np
@@ -94,8 +95,6 @@ def load_video_batch(path_list, num_frames, batch_size, output_size=(120,180),
 		pool_size=30, thread_per_video=3):
 	
 	## select `batch_size` videos from `file_list` and generate their `start_frames`
-	print("\tGetting path starts...")
-	start_ = time.time()
 	with Pool(min(batch_size, pool_size)) as p:
 		path_starts = p.starmap(get_single_path_and_start, [(path_list, num_frames) for i in range(batch_size)]) 
 
@@ -108,16 +107,10 @@ def load_video_batch(path_list, num_frames, batch_size, output_size=(120,180),
 		call_list = [ [pth, int(start + i*start_inc), start_inc_int, output_size] for i in range(thread_per_video)]
 		call_args += call_list
 
-	end_ = time.time()
-	print("\tTOOK ", end_-start_)
 
-	print("\tCalling starmap on `load_video_range`...")
-	start = time.time()
 	## Invoke all the calls
 	with Pool(pool_size) as p: 
 		video_clips = p.starmap(load_video_range, call_args)
-	end = time.time()
-	print("\tTOOK ", end-start)
 
 	## Recombine all the call results
 	# pdb.set_trace()
@@ -128,7 +121,6 @@ def load_video_batch(path_list, num_frames, batch_size, output_size=(120,180),
 		with Pool(pool_size) as p: 
 			video_tensors = p.starmap(get_nth_tensor, [ (video_clips, i, thread_per_video) for i in range(batch_size) ])
 		end = time.time()
-		print("\tTOOK ", end-start)
 	else: 
 		video_tensors = video_clips
 
@@ -166,12 +158,12 @@ if __name__ == "__main__":
 	path_list = [os.path.join(DATA_FOLDER, i) for i in mp4_list]
 
 
-	NUM_FRAMES = 30
-	BATCH_SIZE = 10
+	NUM_FRAMES = 4
+	BATCH_SIZE = 60
 	RESOLUTION = (120,180)
 	POOL_SIZE = 30
 	THREAD_PER_VID = 1
-	NUM_PREFETCH = 5
+	NUM_PREFETCH = 1
 
 	vid_generator = get_generator(path_list, RESOLUTION, NUM_FRAMES, BATCH_SIZE, 
 			pool_size=POOL_SIZE, thread_per_vid=THREAD_PER_VID)
@@ -180,20 +172,23 @@ if __name__ == "__main__":
 	videoset = videoset.prefetch(NUM_PREFETCH)
 
 	start = time.time()
+	cnt = 0
 	for element in videoset: 
 	# for element in vid_generator(): 
+		cnt += 1
+		if cnt == 10:
+			break
 		end = time.time()
 		print("Took: ", end-start)
-		print("\t", element.shape)
-		time.sleep(1.0)
+		# time.sleep(1)
 		start = time.time()
 
 
-	for k in range(100):
-		start = time.time()
-		# batch_tensor = vid_generator()
-		print("batch tensor: ", batch_tensor.shape)
-		end = time.time()
-		print(f"TOOK {end-start} SECONDS")
+	# for k in range(100):
+	# 	start = time.time()
+	# 	# batch_tensor = vid_generator()
+	# 	print("batch tensor: ", batch_tensor.shape)
+	# 	end = time.time()
+	# 	print(f"TOOK {end-start} SECONDS")
 
 
