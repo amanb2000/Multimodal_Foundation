@@ -27,6 +27,7 @@ import argparse
 import datetime
 import pickle
 import pdb
+import time
 from packaging import version
 
 os.environ["TF_GPU_THREAD_MODE"] = "gpu_private"
@@ -62,7 +63,7 @@ parser.add_argument('--frame-size', action='store', type=str,
 
 parser.add_argument('--patch-hwd', action='store', type=str, 
 		help='`patch_height,patch_width,patch_duration`. Default=`16,16,3`.', 
-		default='16,16,3')
+		default='16,16,1')
 
 parser.add_argument('--batch-size', action='store', type=int,
 		help='Size of the batch (number of video tensors per training batch). '+
@@ -242,9 +243,6 @@ assert os.path.isdir(args.data_folder), f"Data folder `{args.data_folder}` is no
 
 # Training loop parameters
 assert args.alpha >= 0 and args.alpha <= 1, f"Alpha must be between 0 and 1 -- received {args.alpha}"
-assert args.blind_iters < args.num_frames/args.window_inc, f"Blind iterations exceeds total number of iterations!"
-assert args.present < args.num_frames, f"Present window size mus not exceed the number of frames loaded per video!"
-assert args.future < args.num_frames,  f"Future window size mus not exceed the number of frames loaded per video!"
 
 # Frame size
 out_size = args.frame_size.split(',')
@@ -406,3 +404,40 @@ path_list = [os.path.join(DATA_FOLDER, i) for i in mp4_list]
 vid_generator = pvl.get_generator(path_list, output_size, num_frames, batch_size, 
 			pool_size=args.pool_size, thread_per_vid=args.threads_per_vid)
 
+
+
+videoset = tf.data.Dataset.from_generator(vid_generator, output_signature=tf.TensorSpec(shape=[args.batch_size, num_frames, *output_size, 3], dtype=tf.float16))
+videoset = videoset.prefetch(args.num_prefetch)
+
+
+print("\tMaking patches from Videoset...")
+PatchSet = vp.make_patchset(videoset, patch_duration, patch_height, patch_width)
+print("\tMaking the flat patch set...")
+FlatPatchSet = vp.patch_to_flatpatch(PatchSet, batch_size=args.batch_size)
+print("\tAdding codes to the PatchSet...")
+CodedPatchedSet = PatchSet.map(lambda x: vp.add_spacetime_codes(x, 
+		k_space=k_space, mu_space=mu_space, k_time=k_time, mu_time=mu_time))
+print("Flattening the coded + patched dataset...")
+FlatCodedPatchedSet = vp.patch_to_flatpatch(CodedPatchedSet, batch_size=args.batch_size)
+
+"""
+FlatCodedPatchedSet = FlatCodedPatchedSet.map(lambda x: tf.squeeze(x))
+FlatCodedPatchedSet = FlatCodedPatchedSet.batch(batch_size)
+"""
+
+
+start = time.time()
+cnt = 0
+for element in FlatCodedPatchedSet: 
+# for element in vid_generator(): 
+	cnt += 1
+	if cnt == 10:
+		break
+	print("\t", element.shape)
+	end = time.time()
+	print("Took: ", end-start)
+	time.sleep(1)
+	start = time.time()
+
+
+print('\n\nbye')
