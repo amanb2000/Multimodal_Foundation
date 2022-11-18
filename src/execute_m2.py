@@ -114,8 +114,8 @@ parser.add_argument('--num-iters', action='store', type=int,
 		default=200)
 
 parser.add_argument('--lr', action='store', type=float,
-		help="Primary optimizer learning rate. Default=0.001",
-		default=0.001)
+		help="Primary optimizer learning rate. Default=0.0001",
+		default=0.0001)
 
 
 ## Data traversal training parameters
@@ -126,6 +126,10 @@ parser.add_argument("--alpha", action='store', type=float, default=0.7,
 		help='Weighting between present timewindow autoencoding vs. far '+ 
 		'future prediction errors. 1 -> only present, 0 -> only future. '+
 		'Default=0.7')
+
+parser.add_argument('--num-frames', action='store', type=int, default=100, 
+		help="Number of frames read in per iteration. Sub-iterations are used "+
+		"to train the model on `present` + `future`-frame length subsets.")
 
 parser.add_argument("--present", action='store', type=int, default=1, 
 		help="Number of frames in the `present` time window. Default=1.")
@@ -269,9 +273,11 @@ from tqdm import tqdm
 import cv2
 import imageio
 
+import m2
 import m1
 import video_loader as vl
 import video_preprocess as vp
+import train_m2
 import train_m1
 import parallel_video_loader as pvl
 
@@ -368,7 +374,7 @@ print("Done!")
 mp4_list = os.listdir(args.data_folder)
 batch_size = args.batch_size
 num_prefetch = args.num_prefetch
-num_frames = args.present+args.future
+num_frames = args.num_frames
 
 if args.overfit != -1:
 	mp4_list = mp4_list[:args.overfit]
@@ -420,24 +426,359 @@ CodedPatchedSet = PatchSet.map(lambda x: vp.add_spacetime_codes(x,
 print("Flattening the coded + patched dataset...")
 FlatCodedPatchedSet = vp.patch_to_flatpatch(CodedPatchedSet, batch_size=args.batch_size)
 
-"""
-FlatCodedPatchedSet = FlatCodedPatchedSet.map(lambda x: tf.squeeze(x))
-FlatCodedPatchedSet = FlatCodedPatchedSet.batch(batch_size)
-"""
 
 
-start = time.time()
+
+print("\n\n\n")
+print("\t========================")
+print("\t=== SETTING UP MODEL ===")
+print("\t========================")
+
+instantiation_params = None
+if args.restore_from != None: 
+	# Load data (deserialize)
+	instant_param_pth = os.path.join(args.restore_from, 'instantiation_params.pkl')
+	with open(instant_param_pth, 'rb') as handle:
+		instantiation_params = pickle.load(handle)
+
+## Setting up the component modules of the top-level PAE model.
+# Encoder 
+
+# Getting arguments 
+encoder_args = None
+encoder_kwargs = None
+
+if instantiation_params != None: # if we are restoring, we need to use the exact same args.
+	encoder_args = instantiation_params['encoder_args']
+	encoder_kwargs = instantiation_params['encoder_kwargs']
+else:
+	n_encoder_blocks = args.n_enc_blocks
+	encoder_tfres = False
+	enc_nheads = args.nheads
+	enc_keydim = args.keydim
+	enc_mhadropout = args.mhadropout
+
+	encoder_args = [n_encoder_blocks]
+	encoder_kwargs = {
+		'tfblock_residual': encoder_tfres, 
+		'n_heads': enc_nheads, 
+		'key_dim': enc_keydim, 
+		'mha_dropout': enc_mhadropout
+	}
+
+test_encoder = m2.PAE_Encoder(*encoder_args, **encoder_kwargs)
+
+# Latent evolver 
+latent_ev_args = None
+latent_ev_kwargs = None
+
+if instantiation_params != None: 
+	latent_ev_args = instantiation_params['latent_ev_args']
+	latent_ev_kwargs = instantiation_params['latent_ev_kwargs']
+else:	
+	n_latentev_blocks = args.n_latent_blocks
+	latent_distinct_blocks = not args.identical_latent
+	latent_residual = False
+	latent_nheads = args.nheads
+	latent_keydim = args.keydim
+	latent_mhadropout = args.mhadropout
+
+	latent_ev_args = [n_latentev_blocks]
+	latent_ev_kwargs = {
+		'distinct_blocks': latent_distinct_blocks, 
+		'tfblock_residual': latent_residual, 
+		'n_heads': latent_nheads, 
+		'key_dim': latent_keydim, 
+		'mha_dropout': latent_mhadropout
+	}
+
+test_latent_ev = m2.PAE_Latent_Evolver(*latent_ev_args,**latent_ev_kwargs) 
+
+
+# decoder
+decoder_args = None
+decoder_kwargs = None
+
+if instantiation_params != None:
+	decoder_args = instantiation_params['decoder_args']
+	decoder_kwargs = instantiation_params['decoder_kwargs']
+else:
+	output_patch_dim = patch_duration * patch_height * patch_width * 3
+	n_decoder_blocks = args.n_dec_blocks
+	expansion_block_num = args.dec_expansion_block
+	decoder_tfres = False
+	dec_nheads = args.nheads
+	dec_keydim = args.keydim
+	dec_mhadropout = args.mhadropout
+
+	decoder_args = [output_patch_dim, n_decoder_blocks, expansion_block_num]
+	decoder_kwargs = {
+		'tfblock_residual': decoder_tfres, 
+		'n_heads': dec_nheads, 
+		'key_dim': dec_keydim, 
+		'mha_dropout': dec_mhadropout
+	}
+
+test_decoder = m2.PAE_Decoder(*decoder_args, **decoder_kwargs)
+
+# Loss function definition
+mse = tf.keras.losses.MeanSquaredError()
+
+# Unpacking some params
+
+## Instantiating the PAE model!
+code_dim = 2*(2*k_space+1) + (2*k_time+1) # k_space = 15 and k_time = 64 -> 191
+
+if instantiation_params != None: 
+	perceiver_kwargs = instantiation_params['perceiver_kwargs']
+else:
+	perceiver_kwargs = {
+		'code_dim': code_dim,
+		'latent_dims': latent_dims,
+	}
+
+
+perceiver_ae = m2.PerceiverAE(mse, test_encoder, test_latent_ev, test_decoder, **perceiver_kwargs)
+
+
+## Saving arguments for instantiating the perceiver!
+instantiation_params = {
+	'encoder_args': encoder_args,
+	'encoder_kwargs': encoder_kwargs,
+	'latent_ev_args': latent_ev_args,
+	'latent_ev_kwargs': latent_ev_kwargs,
+	'decoder_args': decoder_args,
+	'decoder_kwargs': decoder_kwargs,
+	'perceiver_kwargs': perceiver_kwargs
+}
+
+instantiation_params_output_pth = os.path.join(args.output_folder, 'instantiation_params.pkl')
+print(f"\nSaving the instantiation parameters to `{instantiation_params_output_pth}`")
+
+# Store data (serialize)
+with open(instantiation_params_output_pth, 'wb') as handle:
+    pickle.dump(instantiation_params, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+print("Done!")
+
+
+if args.restore_from != None: 
+	print(f"Restoring model from {latest}!")
+	perceiver_ae.load_weights(latest)
+
+perceiver_ae.reset_latent()
+
+
+print("Done setting up perceiver_ae model!")
+
+
+
+
+print("\n\n\n")
+print("\t=======================")
+print("\t=== TRAINING MODELS ===")
+print("\t=======================")
+
+
+## Calculating tokens per frame -- 
+#  This is used to determine the present/future segments of interest. 
+num_width = output_size[1] // patch_width
+num_height = output_size[0] // patch_height
+
+tokens_per_frame = (num_width * num_height)/patch_duration
+
+present_tokens = round(tokens_per_frame * args.present)
+future_tokens = round(tokens_per_frame * args.future)
+super_el_tokens = round(tokens_per_frame * args.num_frames) # number of tokens in a batch element.
+sub_el_tokens = present_tokens + future_tokens
+
+print("Tokens per frame: ", tokens_per_frame)
+print("Present no. tokens: ", present_tokens)
+print("Future no. tokens: ", future_tokens)
+print("Batch element no. tokens: ", super_el_tokens)
+
+# args.num_iters
+# args.ckpt_period
+checkpoint_period = args.ckpt_period
+checkpoint_path = os.path.join(args.output_folder,"checkpoints/cp-{epoch:04d}.ckpt")
+if not os.path.exists(os.path.dirname(checkpoint_path)):
+	os.makedirs(os.path.dirname(checkpoint_path))
+
+
+
+# TODO: Update as tfa's LAMB optimizer
+optimizer = keras.optimizers.Adam(learning_rate=args.lr)
+
+
+## Predictive training args
+predictive_training_args = []
+predictive_training_kwargs = {
+	'alpha': args.alpha,
+	'present_time_window': args.present,
+	'prediction_time_window': args.future, 
+	'prob_prediction_select': args.future_selection_probability, 
+}
+
+print("Caching the predictive training arguments!")
+predictive_training_args_output_path = os.path.join(args.output_folder, 'predictive_training_kwargs.pkl')
+with open(predictive_training_args_output_path, 'wb') as handle:
+    pickle.dump(predictive_training_kwargs, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+## Setting up tensorboard stuff
+train_log_dir = '../training/logs/gradient_tape/' + NOW + '/train'
+setup_log_dir = '../training/logs/gradient_tape/' + NOW + '/setup'
+
+train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+
+
+################################################################################
+
+## Let's extract the codes for the first {present + future} tokens...
+_el = None
+for x in FlatCodedPatchedSet: 
+	_el = x
+	break
+
+el = tf.constant(_el.numpy())
+
+current_interval_codes = el[:,:sub_el_tokens,-perceiver_kwargs['code_dim']:]
+
+tf.profiler.experimental.start(train_log_dir)
+print("Model location (latent): ", perceiver_ae.latent.device)
+
+present_mask = np.zeros([present_tokens], dtype=bool) # boolean mask
+num_true = round(args.mask_ratio*present_tokens)
+present_mask[:num_true] = True
+
+future_mask = np.zeros([future_tokens], dtype=bool)
+num_true = round(args.future_selection_probability * future_tokens)
+future_mask[:num_true] = True
+
+
+## Look at present, predict present. Predict future. 
+
+
+''' 
+pbar = tqdm(FlatCodedPatchedSet, total=5)
 cnt = 0
-for element in FlatCodedPatchedSet: 
-# for element in vid_generator(): 
+for el in pbar: 
+	h = tf.math.reduce_mean(el).numpy()
+	pbar.set_description(f'bruh {h}')	
+	time.sleep(1.1)
 	cnt += 1
-	if cnt == 10:
+	if cnt == 5: 
 		break
-	print("\t", element.shape)
-	end = time.time()
-	print("Took: ", end-start)
-	time.sleep(1)
-	start = time.time()
+''' 
+
+print("Number of sub iterations: ", args.num_frames - args.present-args.future)
+
+cnt = 0
+subcnt=0
+super_el = el[:,:,:-perceiver_kwargs['code_dim']]
+# for i in tqdm(range(args.num_iters)):
+# for _super_el in tqdm(FlatPatchSet, total=args.num_iters):
+for _super_el in FlatPatchSet:
+	# super_el = _super_el
+	# super_el = tf.constant(_super_el.numpy())
+	print("\n\n\nSUPER ELEMENT DEVICE: ", super_el.device, " SHAPE: ", super_el.shape)
+	print("FAKE SUPER ELEMENT DEVICE: ", _super_el.device)
+
+	## Sample present and future tensors.
+	for j in tqdm(range(args.num_frames-args.present-args.future)):
+		subcnt+=1 
+
+		start_token = round(j*tokens_per_frame)
+		end_token = start_token + sub_el_tokens
+
+		el = super_el[:,start_token:end_token,:]
+		el = tf.concat([el, current_interval_codes], 2)
+
+		present = el[:,:present_tokens, :]
+		future = el[:,present_tokens:present_tokens+future_tokens, :]
+
+		np.random.shuffle(present_mask)
+		np.random.shuffle(future_mask)
+		present_sampled = tf.boolean_mask(present, present_mask, axis=1) # use the boolean sampling mask thing.
+		future_sampled = tf.boolean_mask(future, future_mask, axis=1)
+
+		total_loss, present_loss, future_loss, blind_loss = train_m2.training_step(perceiver_ae, present, present_sampled, future_sampled, optimizer, alpha=args.alpha)
+		with train_summary_writer.as_default():
+			tf.summary.scalar('total_loss', total_loss.numpy(), step=subcnt)
+			tf.summary.scalar('blind_loss', blind_loss.numpy(), step=subcnt)
+			tf.summary.scalar('present_loss', present_loss.numpy(), step=subcnt)
+			tf.summary.scalar('future_loss', future_loss.numpy(), step=subcnt)
+
+
+
+
+
+	cnt+=1 
+	if cnt == args.num_iters:
+		break
+
+
+
+
+	print(f"Total (iter {cnt}/{args.num_iters}): ", total_loss.numpy())
+	## Logging stuff from this iteration. 
+
+	if cnt == 2:
+		print(perceiver_ae.summary())
+		print("PERCEIVER N, C: ", perceiver_ae.N, perceiver_ae.C)
+		print("Latent shape: ", perceiver_ae.latent.shape)
+		os.mkdir(os.path.join(args.output_folder, "full_model"))
+		# perceiver_ae.save(os.path.join(args.output_folder, "full_model/iter2"))
+	
+	if cnt % checkpoint_period == 0:
+		perceiver_ae.save_weights(checkpoint_path.format(epoch=cnt))
+
+	continue
+tf.profiler.experimental.stop()
+	
+print("\nDONE TRAINING!!!")
+################################################################################
+
+print("\nPlotting autoencoding losses over time.")
+
+plt.plot(losses, label=f'{args.alpha}-weighted')
+plt.plot(present_losses, label=f'present')
+plt.plot(future_losses, label=f'future')
+plt.title(f"Surprises over Time -- Autoencoding {num_frames} Frames")
+plt.legend()
+plt.savefig(os.path.join(args.output_folder, "loss.png"))
+plt.close()
+
+
+print("\nPlotting autoencoding losses over time.")
+
+plt.plot(current_gpu_use, label="current")
+plt.plot(peak_gpu_use, label="peak")
+plt.title("GPU Use per Iteration")
+plt.legend()
+plt.savefig(os.path.join(args.output_folder,"GPU_use.png"))
+plt.close()
+
+
+out_log.close()
+err_log.close()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 print('\n\nbye')
+
