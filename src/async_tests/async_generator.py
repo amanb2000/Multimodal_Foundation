@@ -8,35 +8,43 @@ bound routine.
 For simplicity, the I/O-bound operation will be a `time.sleep()` operation. 
 Similar for the consumer's "work" function.  I will also be checking PID's to 
 ensure that it is ACTUALLY a new process performing the work. 
+
+This leverages two objects from `multiprocessing`: a Queue and the Process 
+object. The Queue is process-safe and enables blocking until data is received 
+via the `Queue.get()` function (waits until queue size is greater than 0). 
+
+
 """ 
 
 import time
-import numpy as np
 import os
 import pdb
 import multiprocessing
+import random
+
+import numpy as np
 
 ## Fake data retriever function. 
-def extend_queue(queue, wait_time): 
+def extend_queue(queue, wait_time, cnt): 
 	""" 
 	Simulates an IO-heavy process that requries `wait_time` seconds to push 
 	a piece of data to some `queue`. 
 	""" 
 	print(f"\tPID {os.getpid()} sleeping now...")
-	print("\tQueue length: ", queue.qsize())
+	new_val = cnt # = random.randint(0,33)
+	print("\tNew value: ", new_val)
 	time.sleep(wait_time)
-	queue.put(np.array([1,2,3,2,1]))
+	queue.put(new_val)
 
-def get_and_replenish(queue, wait_time):
+def get_and_replenish(queue, wait_time,cnt=3):
 	""" Gets a piece of data after launching a process to replenish.
 	"""
-	worker = multiprocessing.Process(target=extend_queue, args=(queue, wait_time))
+	worker = multiprocessing.Process(target=extend_queue, args=(queue, wait_time,cnt))
 	worker.start()
-	# worker.join()
 	return queue.get()
 
 ## Generator Creation -- fixed IO time.
-def get_generator(data_getter, IO_time=1.0): 
+def get_generator(data_getter, IO_time=1.0, cnt=1): 
 	io_time = IO_time
 
 	def generate_data():
@@ -45,12 +53,15 @@ def get_generator(data_getter, IO_time=1.0):
 		_data_getter = data_getter
 
 		data_cache = multiprocessing.Queue()
-		# worker = multiprocessing.Process(target=extend_queue, args=(data_cache, _io_time))
-		# worker.start()
-		# worker.join()
-
+		worker = multiprocessing.Process(target=extend_queue, args=(data_cache, _io_time))
+		worker.start()
+		worker.join()
+		cnt=1
+		_data_getter(data_cache, _io_time, cnt=cnt)
+		cnt += 1
 		while True: 
-			yield _data_getter(data_cache, _io_time)
+			yield _data_getter(data_cache, _io_time,cnt=cnt)
+			cnt+=1
 
 			# yield _data_getter(_io_time)
 
