@@ -28,7 +28,7 @@ from tqdm import tqdm
 import pdb
 
 
-
+# @tf.function
 def predictive_training_step(model, batch_tensor, optimizer, tokens_per_frame, 
 		alpha=0.75, blind_iters=1, present_time_window=5, 
 		prediction_time_window=50, prob_prediction_select=0.1, 
@@ -174,15 +174,13 @@ def predictive_training_step(model, batch_tensor, optimizer, tokens_per_frame,
 			# print("\tFuture  Tensor Shape: ", future.shape)
 
 			reset = i==0
-			# pdb.set_trace()
+
 			cur_surprise = model(present, reset_latent=reset)
 			fut_surprise = model(future, remember_this=False, no_droptoken=True)
 			if i >= blind_iters:
 				surprise_loss += cur_surprise
 				future_loss += fut_surprise		
 
-			# print(f"\tCurrent loss: ", cur_surprise.numpy())
-			# print(f"\tFuture loss: ", fut_surprise.numpy())
 
 		surprise_loss /= num_iters
 		future_loss /= num_iters
@@ -224,6 +222,7 @@ def training_step(model, video, optimizer, n_iters=3, blind_iters=1):
 				loss += cur_loss
 
 	grads = tape.gradient(loss, model.trainable_weights)
+	print("Gradient device: ", grads[0].device)
 	optimizer.apply_gradients(zip(grads, model.trainable_weights))
 	return loss
 
