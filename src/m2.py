@@ -356,10 +356,6 @@ class PerceiverAE(keras.Model):
 
 			`code_dim`: 	Dimensionality of the spacetime Fourier codes used
 							in the input byte array tensor.
-			
-			`p_droptoken`: 	Portion of tokens to retain from the input tensor. 
-						This can be optionally overwritten in a `call()` 
-						invocation.		
 		"""
 		super(PerceiverAE, self).__init__()
 
@@ -410,12 +406,16 @@ class PerceiverAE(keras.Model):
 				information into the latent state. 
 		"""
 
-		if reset_latent or self.latent == None: 
+		if reset_latent or self.latent == None or reconstruct_me.shape[0] != self.latent.shape[0]: 
 			B = reconstruct_me.shape[0]
 			self.reset_latent(B=B)
 
 
 
+		# Calculate loss on trying to predict the `reconstruct_me`: 
+		spacetime_codes = reconstruct_me[:,:,-self.code_dim:]
+		prediction = self.decoder([spacetime_codes, self.latent])
+		surprise = self.loss_fn(prediction, reconstruct_me[:,:,:-self.code_dim])
 
 		if remember_this:
 			# Incorporating new information into the latent 
@@ -426,12 +426,7 @@ class PerceiverAE(keras.Model):
 
 		# Returning the surprise
 		if return_prediction: 
-			# Calculate loss on trying to predict the `reconstruct_me`: 
-			spacetime_codes = reconstruct_me[:,:,-self.code_dim:]
-			prediction = self.decoder([spacetime_codes, self.latent])
-			surprise = self.loss_fn(prediction, reconstruct_me[:,:,:-self.code_dim])
 			return surprise, prediction
-
 		
 		return surprise
 
