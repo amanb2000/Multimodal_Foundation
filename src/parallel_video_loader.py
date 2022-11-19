@@ -17,6 +17,8 @@ import tensorflow as tf
 import cv2
 import numpy as np
 
+logical_gpus = tf.config.list_logical_devices('GPU')
+print("LOGICAL GPUs: ", logical_gpus)
 
 def load_video_range(video_path, start_frame, num_frames, output_size):
 	""" Loads video from `video_path` starting on `start_frame` for 
@@ -124,8 +126,10 @@ def load_video_batch(path_list, num_frames, batch_size, output_size=(120,180),
 	else: 
 		video_tensors = video_clips
 
-	batch_tensor = np.concatenate(video_tensors, axis=0)
-	batch_tensor = batch_tensor.astype(np.float16)
+	# batch_tensor = np.concatenate(video_tensors, axis=0)
+	# batch_tensor = batch_tensor.astype(np.float16)
+	# batch_tensor /= 255.0
+
 	return video_tensors 
 
 def get_generator(path_list, out_size, n_frames, batch_size, pool_size=30, thread_per_vid=1):
@@ -147,41 +151,49 @@ def get_generator(path_list, out_size, n_frames, batch_size, pool_size=30, threa
 			batch_tensor = load_video_batch(_path_list, _num_frames, _batch_size, output_size=_output_size, 
 					pool_size=_pool_size, thread_per_video=_thread_per_vid)
 			batch_tensor = np.concatenate(batch_tensor, axis=0)
-			yield batch_tensor
+			yield batch_tensor/255.0
 
 	return generate_video_tensors
 
 
 if __name__ == "__main__":
-	DATA_FOLDER = "../datasets/downloads"
-	mp4_list = os.listdir(DATA_FOLDER)
-	path_list = [os.path.join(DATA_FOLDER, i) for i in mp4_list]
+
+	with tf.device('/device:GPU:1'):
+		DATA_FOLDER = "../datasets/downloads"
+		mp4_list = os.listdir(DATA_FOLDER)
+		path_list = [os.path.join(DATA_FOLDER, i) for i in mp4_list]
 
 
-	NUM_FRAMES = 4
-	BATCH_SIZE = 60
-	RESOLUTION = (120,180)
-	POOL_SIZE = 30
-	THREAD_PER_VID = 1
-	NUM_PREFETCH = 1
+		NUM_FRAMES = 3
+		BATCH_SIZE = 10
+		RESOLUTION = (120,180)
+		POOL_SIZE = 20
+		THREAD_PER_VID = 1
+		NUM_PREFETCH = 1
 
-	vid_generator = get_generator(path_list, RESOLUTION, NUM_FRAMES, BATCH_SIZE, 
-			pool_size=POOL_SIZE, thread_per_vid=THREAD_PER_VID)
-	
-	videoset = tf.data.Dataset.from_generator(vid_generator, output_signature=tf.TensorSpec(shape=[BATCH_SIZE,NUM_FRAMES, *RESOLUTION, 3], dtype=tf.float16))
-	videoset = videoset.prefetch(NUM_PREFETCH)
+		vid_generator = get_generator(path_list, RESOLUTION, NUM_FRAMES, BATCH_SIZE, 
+				pool_size=POOL_SIZE, thread_per_vid=THREAD_PER_VID)
+		
+		videoset = tf.data.Dataset.from_generator(vid_generator, output_signature=tf.TensorSpec(shape=[BATCH_SIZE,NUM_FRAMES, *RESOLUTION, 3], dtype=tf.float16))
+		videoset = videoset.prefetch(NUM_PREFETCH)
 
-	start = time.time()
-	cnt = 0
-	for element in videoset: 
-	# for element in vid_generator(): 
-		cnt += 1
-		if cnt == 10:
-			break
-		end = time.time()
-		print("Took: ", end-start)
-		# time.sleep(1)
 		start = time.time()
+		cnt = 0
+
+		for element in videoset: 
+		# for element in vid_generator(): 
+			cnt += 1
+			if cnt == 10:
+				break
+
+			with tf.device('/device:GPU:1'): 
+				x = tf.constant(element.numpy())
+				print("\t", tf.math.reduce_mean(x).numpy())
+				print("\t", x.device)
+			end = time.time()
+			print("Took: ", end-start, " -- device: ", element.device)
+			# time.sleep(1)
+			start = time.time()
 
 
 	# for k in range(100):
