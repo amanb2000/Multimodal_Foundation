@@ -16,6 +16,12 @@ import argparse
 import datetime
 import pickle
 import pdb
+from packaging import version
+
+os.environ["TF_GPU_THREAD_MODE"] = "gpu_private"
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+
+
 
 
 ## Parsing commandline arguments -- must occur here because tensorflow 
@@ -82,6 +88,8 @@ parser.add_argument('--overfit', action='store', type=int, default=-1,
 		'on those. Default=-1 (i.e. use the full dataset)')
 parser.add_argument('--cpu-only', action='store_true', 
 		help='Include this flag to force training to use only CPU.')
+parser.add_argument('--one-gpu', action='store_true', 
+		help='Include this flag to force training to use only one GPU.')
 
 parser.add_argument('--ckpt-period', action='store', type=int,
 		help='Number of iterations separating each checkpoint. Default=50',
@@ -176,18 +184,19 @@ parser.add_argument('--dec-expansion-block', action='store', type=int, default=2
 
 
 
-
 args = parser.parse_args() 
 print("ARGS: \n\t", args)
 
 ## Validating args
-# Output folder
+# Output folder 
+NOW = None
 if args.output_folder.endswith('{now}'):
 	args.output_folder = args.output_folder[:-5]
 	print(args.output_folder)
 	ct = str(datetime.datetime.now()).replace(' ', '_')
 	ct = ct.split('.')[0]
 	print("\n",ct)
+	NOW = ct
 	args.output_folder = os.path.join(args.output_folder, ct)
 if not os.path.exists(args.output_folder):
 	os.makedirs(args.output_folder)
@@ -248,8 +257,11 @@ patch_height, patch_width, patch_duration = [int(i) for i in patch_hwd]
 
 
 
+# print("Visible devices: ", os.environ["CUDA_VISIBLE_DEVICES"])
 if args.cpu_only:
 	os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+
+
 import tensorflow as tf 
 from tensorflow import keras
 import numpy as np
@@ -262,6 +274,19 @@ import m1
 import video_loader as vl
 import video_preprocess as vp
 import train_m1
+
+## Reducing GPU's to 1 if needed. 
+if args.one_gpu:
+	gpus = tf.config.list_physical_devices('GPU')
+	if gpus:
+		# Restrict TensorFlow to only use the first GPU
+		try:
+			tf.config.set_visible_devices(gpus[1], 'GPU')
+			logical_gpus = tf.config.list_logical_devices('GPU')
+			print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
+		except RuntimeError as e:
+			# Visible devices must be set before GPUs have been initialized
+			print(e)
 
 
 # Restore from 
@@ -284,6 +309,8 @@ print("Physical devices: ",physical_devices)
 
 
 ## Acquiring the dataset!
+
+# Starting the setup profiling thing
 
 # Meta/constants
 latent_dims = [int(i) for i in args.latent_dims.split(',')] # potentially overwritten in perceiver_kwargs
@@ -394,16 +421,57 @@ def get_generator(vid_list, dat_folder, out_size, n_frames):
 
 	return generate_video_tensors
 
+
 video_generator = get_generator(mp4_list, args.data_folder, output_size, num_frames)
 
-# pdb.set_trace()
 
+
+## Option 1: Use the weird lambda function stuff
 videoset_ = lambda: tf.data.Dataset.from_generator(video_generator, output_signature=tf.TensorSpec(shape=[1, num_frames, *output_size, 3], dtype=tf.float32))
 
+
 videoset = tf.data.Dataset.range(1).interleave(
-        lambda _: videoset_(),
-        num_parallel_calls=tf.data.AUTOTUNE
-    )
+		lambda _: videoset_(),
+		num_parallel_calls=tf.data.AUTOTUNE
+	)
+## Option 2: Use the original videoset creation thing
+# videoset = tf.data.Dataset.from_generator(video_generator, output_signature=tf.TensorSpec(shape=[1, num_frames, *output_size, 3], dtype=tf.float32))
+
+
+print("Making patches from Videoset...")
+PatchSet = vp.make_patchset(videoset, patch_duration, patch_height, patch_width)
+
+
+print("Making the flat patch set...")
+FlatPatchSet = vp.patch_to_flatpatch(PatchSet, batch_size=1)
+
+
+print("Adding codes to the PatchSet...")
+CodedPatchedSet = PatchSet.map(lambda x: vp.add_spacetime_codes(x, 
+		k_space=k_space, mu_space=mu_space, k_time=k_time, mu_time=mu_time))
+
+
+print("Flattening the coded + patched dataset...")
+FlatCodedPatchedSet = vp.patch_to_flatpatch(CodedPatchedSet, batch_size=1)
+FlatCodedPatchedSet = FlatCodedPatchedSet.map(lambda x: tf.squeeze(x))
+FlatCodedPatchedSet = FlatCodedPatchedSet.batch(batch_size)
+FlatCodedPatchedSet = FlatCodedPatchedSet.prefetch(num_prefetch)
+
+import time
+start = time.time()
+cnt = 0
+for element in FlatCodedPatchedSet: 
+# for element in vid_generator(): 
+	cnt += 1
+	if cnt == 10:
+		break
+	print("\t", element.shape)
+	end = time.time()
+	print("Took: ", end-start)
+	time.sleep(1)
+	start = time.time()
+
+
 print(videoset)
 
 def show_nn_sq(video_tensor, n=3, title="Some Frames", fname="bruh.png"):
@@ -424,35 +492,20 @@ def show_nn_sq(video_tensor, n=3, title="Some Frames", fname="bruh.png"):
 	plt.savefig(fname)
 	plt.close()
 
-out_test = os.path.join(args.output_folder, "source_video_example.png")
-print(f"Showing off an element of the videodataset(generator) in `{out_test}`")	
-for element in videoset:
-	show_nn_sq(tf.squeeze(element), fname=out_test)
-	break
+# out_test = os.path.join(args.output_folder, "source_video_example.png")
+# print(f"Showing off an element of the videodataset(generator) in `{out_test}`")	
+# for element in videoset:
+# 	show_nn_sq(tf.squeeze(element), fname=out_test)
+# 	print("VIDEOSET ELEMENT DEVICE: ", element.device)
+# 	break
 
 
-print("Making patches from Videoset...")
-PatchSet = vp.make_patchset(videoset, patch_duration, patch_height, patch_width)
-
-print("Making the flat patch set...")
-FlatPatchSet = vp.patch_to_flatpatch(PatchSet, batch_size=1)
-
-print("Adding codes to the PatchSet...")
-CodedPatchedSet = PatchSet.map(lambda x: vp.add_spacetime_codes(x, 
-		k_space=k_space, mu_space=mu_space, k_time=k_time, mu_time=mu_time))
-
-print("Flattening the coded + patched dataset...")
-FlatCodedPatchedSet = vp.patch_to_flatpatch(CodedPatchedSet, batch_size=1)
-FlatCodedPatchedSet = FlatCodedPatchedSet.map(lambda x: tf.squeeze(x))
-FlatCodedPatchedSet = FlatCodedPatchedSet.batch(batch_size)
-FlatCodedPatchedSet = FlatCodedPatchedSet.prefetch(num_prefetch)
-
-cnt = 0
-for el in FlatCodedPatchedSet: 
-	print(" ** Shape of FlatCodedPatchedSet element: ", el.shape)
-	cnt += 1
-	if cnt == 2:
-		break
+# cnt = 0
+# for el in FlatCodedPatchedSet: 
+# 	print(" ** Shape of FlatCodedPatchedSet element: ", el.shape)
+# 	cnt += 1
+# 	if cnt == 2:
+# 		break
 
 print("Done getting datasets setup!")
 
@@ -571,6 +624,7 @@ else:
 		'p_droptoken': p_droptoken		
 	}
 
+
 perceiver_ae = m1.PerceiverAE(mse, test_encoder, test_latent_ev, test_decoder, **perceiver_kwargs)
 
 
@@ -630,6 +684,7 @@ if not os.path.exists(os.path.dirname(checkpoint_path)):
 optimizer = keras.optimizers.Adam(learning_rate=args.lr)
 # train_m1.train_model(perceiver_ae, FlatCodedPatchedSet, optimizer, dset_size)
 
+# Stopping the setup profiling tracker
 
 
 ## Predictive training args
@@ -656,16 +711,51 @@ future_losses = []
 current_gpu_use = []
 peak_gpu_use = []
 
+
+## Setting up tensorboard stuff
+train_log_dir = '../training/logs/gradient_tape/' + NOW + '/train'
+setup_log_dir = '../training/logs/gradient_tape/' + NOW + '/setup'
+
+train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+
+
 with tf.device('/GPU:1'):
+
+	_el = None
+	for x in FlatCodedPatchedSet: 
+		_el = x
+		break
+
+	el = tf.constant(_el.numpy())
+	tf.profiler.experimental.start(train_log_dir)
+	print("Model location (latent): ", perceiver_ae.latent.device)
+
 	cnt=0
-	for el in tqdm(FlatCodedPatchedSet, total=dset_size):
-		tf.config.experimental.reset_memory_stats('/GPU:1')
-		# loss = train_m1.training_step(perceiver_ae, el, optimizer)
+	for i in tqdm(range(dset_size)):
+	# for el in tqdm(FlatCodedPatchedSet, total=dset_size):
+		## Simple training
+		lss = train_m1.training_step(perceiver_ae, el, optimizer)
+		print(f"Autoencoding loss (iter {cnt}/{dset_size}): ", lss.numpy())
+		with train_summary_writer.as_default():
+			tf.summary.scalar('total_loss', lss.numpy(), step=cnt)
+
+
+		""" 
+		## Hard training
 		surprise_loss, future_loss, total_loss = train_m1.predictive_training_step(perceiver_ae, el, optimizer, *predictive_training_args, **predictive_training_kwargs)
 		losses.append(total_loss.numpy())
 		present_losses.append(surprise_loss.numpy())
 		future_losses.append(future_loss.numpy())
 		# print("Loss: ", total_loss.numpy())
+
+
+		with train_summary_writer.as_default():
+			tf.summary.scalar('total_loss', total_loss.numpy(), step=cnt)
+			tf.summary.scalar('present_loss', surprise_loss.numpy(), step=cnt)
+			tf.summary.scalar('future_loss', future_loss.numpy(), step=cnt)
+		"""
+
+		
 
 		cnt+=1 
 		if cnt == dset_size:
@@ -676,17 +766,22 @@ with tf.device('/GPU:1'):
 			print("Latent shape: ", perceiver_ae.latent.shape)
 			os.mkdir(os.path.join(args.output_folder, "full_model"))
 			# perceiver_ae.save(os.path.join(args.output_folder, "full_model/iter2"))
-
-		dct = tf.config.experimental.get_memory_info('/GPU:1')
-		current_gpu_use.append(dct["current"]*0.000001)
-		peak_gpu_use.append(dct["peak"]*0.000001)
-
+		
 		if cnt % checkpoint_period == 0:
 			perceiver_ae.save_weights(checkpoint_path.format(epoch=cnt))
 
-		print("Norm of `perceiver_ae.latent_init()`: ", tf.norm(perceiver_ae.latent_init(None)).numpy() )
+		continue
+
+		# loss = train_m1.training_step(perceiver_ae, el, optimizer)
 
 
+
+
+
+
+		# print("Norm of `perceiver_ae.latent_init()`: ", tf.norm(perceiver_ae.latent_init(None)).numpy() )
+
+	tf.profiler.experimental.stop()
 	
 print("\nDONE TRAINING!!!")
 
