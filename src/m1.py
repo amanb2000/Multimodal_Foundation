@@ -150,7 +150,7 @@ class PAE_Encoder(keras.layers.Layer):
 
 		# iterating through: 
 		for i in range(self.n_blocks):
-			assert current_input.shape[1] > 0, "Random sampling failed!"
+			#assert current_input.shape[1] > 0, "Random sampling failed!"
 
 			latent_ = self.tf_layers[i]([latent, current_input])
 
