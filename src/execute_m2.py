@@ -62,7 +62,7 @@ parser.add_argument('--frame-size', action='store', type=str,
 		default='120,180')
 
 parser.add_argument('--patch-hwd', action='store', type=str, 
-		help='`patch_height,patch_width,patch_duration`. Default=`16,16,3`.', 
+		help='`patch_height,patch_width,patch_duration`. Default=`16,16,1`.', 
 		default='16,16,1')
 
 parser.add_argument('--batch-size', action='store', type=int,
@@ -120,7 +120,7 @@ parser.add_argument('--lr', action='store', type=float,
 
 ## Data traversal training parameters
 parser.add_argument("--mask-ratio", action='store', type=float, default=0.3, 
-		help='Portion of present tokens actually retained as model input.')
+		help='Portion of present tokens actually retained as model input. Default=0.3.')
 
 parser.add_argument("--alpha", action='store', type=float, default=0.7, 
 		help='Weighting between present timewindow autoencoding vs. far '+ 
@@ -320,6 +320,9 @@ latest = None
 if args.restore_from != None:
 	latest = tf.train.latest_checkpoint(os.path.join(args.restore_from, 'checkpoints'))
 
+latest2 = None 
+if args.restore_from != None: 
+	latest2 = tf.train.latest_checkpoint(os.path.join(args.restore_from, 'checkpoints2'))
 
 # Meta/constants
 latent_dims = [int(i) for i in args.latent_dims.split(',')] # potentially overwritten in perceiver_kwargs
@@ -467,6 +470,7 @@ else:
 	}
 
 test_encoder = m2.PAE_Encoder(*encoder_args, **encoder_kwargs)
+test_encoder2 = m2.PAE_Encoder(*encoder_args, **encoder_kwargs)
 
 # Latent evolver 
 latent_ev_args = None
@@ -493,6 +497,7 @@ else:
 	}
 
 test_latent_ev = m2.PAE_Latent_Evolver(*latent_ev_args,**latent_ev_kwargs) 
+test_latent_ev2 = m2.PAE_Latent_Evolver(*latent_ev_args,**latent_ev_kwargs) 
 
 
 # decoder
@@ -520,9 +525,11 @@ else:
 	}
 
 test_decoder = m2.PAE_Decoder(*decoder_args, **decoder_kwargs)
+test_decoder2 = m2.PAE_Decoder(*decoder_args, **decoder_kwargs)
 
 # Loss function definition
 mse = tf.keras.losses.MeanSquaredError()
+mse2 = tf.keras.losses.MeanSquaredError()
 
 # Unpacking some params
 
@@ -539,6 +546,7 @@ else:
 
 
 perceiver_ae = m2.PerceiverAE(mse, test_encoder, test_latent_ev, test_decoder, **perceiver_kwargs)
+perceiver_ae2 = m2.PerceiverAE(mse2, test_encoder2, test_latent_ev2, test_decoder2, **perceiver_kwargs)
 
 
 ## Saving arguments for instantiating the perceiver!
@@ -565,8 +573,10 @@ print("Done!")
 if args.restore_from != None: 
 	print(f"Restoring model from {latest}!")
 	perceiver_ae.load_weights(latest)
+	perceiver_ae2.load_weights(latest2)
 
 perceiver_ae.reset_latent()
+perceiver_ae2.reset_latent()
 
 
 print("Done setting up perceiver_ae model!")
@@ -604,10 +614,17 @@ checkpoint_path = os.path.join(args.output_folder,"checkpoints/cp-{epoch:04d}.ck
 if not os.path.exists(os.path.dirname(checkpoint_path)):
 	os.makedirs(os.path.dirname(checkpoint_path))
 
+checkpoint_path2 = os.path.join(args.output_folder,"checkpoints2/cp-{epoch:04d}.ckpt")
+if not os.path.exists(os.path.dirname(checkpoint_path2)):
+	os.makedirs(os.path.dirname(checkpoint_path2))
+
+
+
 
 
 # TODO: Update as tfa's LAMB optimizer
 optimizer = keras.optimizers.Adam(learning_rate=args.lr)
+optimizer2 = keras.optimizers.Adam(learning_rate=args.lr)
 
 
 ## Predictive training args
@@ -644,7 +661,7 @@ el = tf.constant(_el.numpy())
 
 current_interval_codes = el[:,:sub_el_tokens,-perceiver_kwargs['code_dim']:]
 
-tf.profiler.experimental.start(train_log_dir)
+# tf.profiler.experimental.start(train_log_dir)
 print("Model location (latent): ", perceiver_ae.latent.device)
 
 present_mask = np.zeros([present_tokens], dtype=bool) # boolean mask
@@ -680,14 +697,15 @@ super_el = el[:,:,:-perceiver_kwargs['code_dim']]
 # for _super_el in tqdm(FlatPatchSet, total=args.num_iters):
 for _super_el in FlatPatchSet:
 	# super_el = _super_el
-	# super_el = tf.constant(_super_el.numpy())
-	print("\n\n\nSUPER ELEMENT DEVICE: ", super_el.device, " SHAPE: ", super_el.shape)
-	print("FAKE SUPER ELEMENT DEVICE: ", _super_el.device)
+	super_el = tf.constant(_super_el.numpy())
+	# print("\n\n\nSUPER ELEMENT DEVICE: ", super_el.device, " SHAPE: ", super_el.shape)
+	# print("FAKE SUPER ELEMENT DEVICE: ", _super_el.device, " SHAPE: ", _super_el.shape)
 
 	## Sample present and future tensors.
-	for j in tqdm(range(args.num_frames-args.present-args.future)):
+	pbar=tqdm(range(args.num_frames-args.present-args.future), leave=False)
+	for j in pbar:
 		subcnt+=1 
-
+		strt1 = time.time()
 		start_token = round(j*tokens_per_frame)
 		end_token = start_token + sub_el_tokens
 
@@ -701,13 +719,28 @@ for _super_el in FlatPatchSet:
 		np.random.shuffle(future_mask)
 		present_sampled = tf.boolean_mask(present, present_mask, axis=1) # use the boolean sampling mask thing.
 		future_sampled = tf.boolean_mask(future, future_mask, axis=1)
+		end1=time.time()
 
+		strt=time.time()
 		total_loss, present_loss, future_loss, blind_loss = train_m2.training_step(perceiver_ae, present, present_sampled, future_sampled, optimizer, alpha=args.alpha)
+		total_loss2, present_loss2, future_loss2, blind_loss2 = train_m2.training_step(perceiver_ae2, present, present_sampled, future_sampled, optimizer, alpha=args.alpha, use_future=False)
+		end=time.time()
+		pbar.set_description(f'Step Time: {round(end-strt,2)}')
+
+		# print(f"\tTraining step took {end-strt} seconds;\nData formatting took {end1-strt1} seconds")
 		with train_summary_writer.as_default():
 			tf.summary.scalar('total_loss', total_loss.numpy(), step=subcnt)
 			tf.summary.scalar('blind_loss', blind_loss.numpy(), step=subcnt)
 			tf.summary.scalar('present_loss', present_loss.numpy(), step=subcnt)
 			tf.summary.scalar('future_loss', future_loss.numpy(), step=subcnt)
+			tf.summary.scalar('prep_time', end1-strt1, step=subcnt)
+			tf.summary.scalar('step_time', end-strt, step=subcnt)
+
+			tf.summary.scalar('total_loss2', total_loss2.numpy(), step=subcnt)
+			tf.summary.scalar('blind_loss2', blind_loss2.numpy(), step=subcnt)
+			tf.summary.scalar('present_loss2', present_loss2.numpy(), step=subcnt)
+			tf.summary.scalar('prep_time', end1-strt1, step=subcnt)
+			tf.summary.scalar('step_time', end-strt, step=subcnt)
 
 
 
@@ -725,60 +758,22 @@ for _super_el in FlatPatchSet:
 
 	if cnt == 2:
 		print(perceiver_ae.summary())
-		print("PERCEIVER N, C: ", perceiver_ae.N, perceiver_ae.C)
-		print("Latent shape: ", perceiver_ae.latent.shape)
 		os.mkdir(os.path.join(args.output_folder, "full_model"))
 		# perceiver_ae.save(os.path.join(args.output_folder, "full_model/iter2"))
 	
 	if cnt % checkpoint_period == 0:
 		perceiver_ae.save_weights(checkpoint_path.format(epoch=cnt))
+		perceiver_ae2.save_weights(checkpoint_path2.format(epoch=cnt))
 
 	continue
-tf.profiler.experimental.stop()
+# tf.profiler.experimental.stop()
 	
 print("\nDONE TRAINING!!!")
 ################################################################################
 
-print("\nPlotting autoencoding losses over time.")
-
-plt.plot(losses, label=f'{args.alpha}-weighted')
-plt.plot(present_losses, label=f'present')
-plt.plot(future_losses, label=f'future')
-plt.title(f"Surprises over Time -- Autoencoding {num_frames} Frames")
-plt.legend()
-plt.savefig(os.path.join(args.output_folder, "loss.png"))
-plt.close()
-
-
-print("\nPlotting autoencoding losses over time.")
-
-plt.plot(current_gpu_use, label="current")
-plt.plot(peak_gpu_use, label="peak")
-plt.title("GPU Use per Iteration")
-plt.legend()
-plt.savefig(os.path.join(args.output_folder,"GPU_use.png"))
-plt.close()
-
 
 out_log.close()
 err_log.close()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 print('\n\nbye')
 
