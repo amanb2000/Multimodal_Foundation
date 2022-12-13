@@ -1,21 +1,11 @@
 """ This is a training script for the ViT-MAE inspired autoencoding vs. 
 predictive coding experiment. 
 
-Two perceiver autoencoders are trained to form representations of videos. 
-Each receives the same frame(s) corresponding to the `present`. Some portion 
-are masked, and these are used to form the latent representations. Both attempt 
-to reconstruct the full set of `present` frame(s). 
-
-One model is also tasked with predicting the pixel values of some `future` 
-frames. These are sampled from the next `future` frames directly after the 
-`present` time window. 
-
-Once the models are trained, a separate script will be used to determine their 
-effectiveness in forming representations of the Kinetics dataset (with linear
-probing as a preliminary metric).
+TODO: Describe the script's big-picture steps in detail, with connections to 
+underlying goals. 
 """
 
-## Import Box.
+## Import Box
 import os 
 import sys 
 import random
@@ -34,11 +24,16 @@ os.environ["TF_GPU_THREAD_MODE"] = "gpu_private"
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 
 
-## Parsing commandline arguments before importing TensorFlow.
+
+
+
 print("\n\n\n")
 print("\t=======================================")
 print("\t=== 1 PARSING COMMANDLINE ARGUMENTS ===")
 print("\t=======================================")
+
+""" TODO: Describe the key steps in "parsing commandline arguments
+"""
 
 parser = argparse.ArgumentParser(description='Train model M1 (perceiver AE).')
 
@@ -51,7 +46,7 @@ parser.add_argument('--output-folder', action='store', type=str,
 
 
 
-## Dataset parameters 
+## Dataset parameters ## 
 parser.add_argument('--data-folder', action='store', type=str,
 		help='Folder containing the `.mp4` video files to use for the ' +
 		'experiment. Default = `../datasets/downloads`.', 
@@ -82,7 +77,7 @@ parser.add_argument('--k-mu-time', action='store', type=str,
 		help='`k,mu` for temporal Fourier codes. Default=`64,200`.',
 		default='64,200')
 
-## Video loader args
+## Video loader args ## 
 parser.add_argument('--pool-size', action='store', type=int, 
 		help='Number of CPU threads allocated to the video loading.',
 		default=20)
@@ -93,7 +88,7 @@ parser.add_argument('--threads-per-vid', action='store', type=int,
 		default=1)
 
 
-## Training parameters
+## Training parameters ## 
 parser.add_argument('--overfit', action='store', type=int, default=-1, 
 		help='Take the first `n` videos from `mp4list` and overfit the model ' + 
 		'on those. Default=-1 (i.e. use the full dataset).')
@@ -118,7 +113,7 @@ parser.add_argument('--lr', action='store', type=float,
 		default=0.0001)
 
 
-## Data traversal training parameters
+## Data traversal training parameters ## 
 parser.add_argument("--mask-ratio", action='store', type=float, default=0.3, 
 		help='Portion of present tokens actually retained as model input. Default=0.3.')
 
@@ -142,7 +137,7 @@ parser.add_argument("--future-selection-probability", action='store', type=float
 		"being selected. Default=0.33.")
 
 
-## Model parameters
+## Model parameters ## 
 parser.add_argument('--restore-from', action='store', type=str, default=None,
 		help='Path to an experiment directory. We will look at the '+
 		'`checkpoints` subdirectory and start from the most recent one.'+
@@ -179,23 +174,21 @@ parser.add_argument('--dec-expansion-block', action='store', type=int, default=2
 		'expanded in the decoder.')
 
 
-
 args = parser.parse_args() 
 print("ARGS: \n\t", args)
 
-# TODO: num_frames = present + future (done)
-# 		distinct_latent -> identical_latent
-# 		p_droptoken 	-> mask_ratio
-#
-#		no_redroptoken 	-> DNE
+
+
 
 
 
 print("\n\n\n")
-print("\t================================================")
-print("\t=== SETTING UP OUTPUT FOLDER/LOGGING/ARG VAL ===")
-print("\t================================================")
+print("\t========================================")
+print("\t=== SETTING UP OUTPUT FOLDER/LOGGING ===")
+print("\t========================================")
 
+""" TODO: Describe the key steps for "setting up output folder/logging/argument validation". 
+"""
 
 ## Output folder for experiment information.
 NOW = None
@@ -240,22 +233,14 @@ err_log = open(os.path.join(args.output_folder, "stderr.log"), "w")
 sys.stderr = tee(stderrsav, err_log)
 
 
-## Validating args
+
+
+## Data Folder and Restoration Argument Validation ## 
 # Checking data 
 assert os.path.exists(args.data_folder), f"Invalid data folder `{args.data_folder}` -- no directory!"
 assert os.path.isdir(args.data_folder), f"Data folder `{args.data_folder}` is not a directory!"
 
-# Training loop parameters
-assert args.alpha >= 0 and args.alpha <= 1, f"Alpha must be between 0 and 1 -- received {args.alpha}"
 
-# Frame size
-out_size = args.frame_size.split(',')
-assert len(out_size) == 2, f"Invalid `--frame-size` parameter: {args.frame_size}"
-output_size = [int(i) for i in out_size]
-# Patch size
-patch_hwd = args.patch_hwd.split(',')
-assert len(patch_hwd) == 3, f"Invalid `--patch-hwd` parameter: {args.patch_hwd}"
-patch_height, patch_width, patch_duration = [int(i) for i in patch_hwd]
 
 # Checkpoint restoration 
 assert args.restore_from == None or os.path.exists(args.restore_from), f"Checkpoint folder DNE: `{args.restore_from}`."
@@ -310,11 +295,28 @@ print("Physical devices: ",physical_devices)
 
 
 
-
 print("\n\n\n")
 print("\t=============================")
 print("\t=== DATA FORMAT ARG PARSE ===")
 print("\t=============================")
+
+""" TODO: Describe key steps for data formatting argument parsing.
+""" 
+
+
+# Training loop parameters
+assert args.alpha >= 0 and args.alpha <= 1, f"Alpha must be between 0 and 1 -- received {args.alpha}"
+
+# Frame size
+out_size = args.frame_size.split(',')
+assert len(out_size) == 2, f"Invalid `--frame-size` parameter: {args.frame_size}"
+output_size = [int(i) for i in out_size]
+# Patch size
+patch_hwd = args.patch_hwd.split(',')
+assert len(patch_hwd) == 3, f"Invalid `--patch-hwd` parameter: {args.patch_hwd}"
+patch_height, patch_width, patch_duration = [int(i) for i in patch_hwd]
+
+
 ## Checkpoint args/restore from 
 latest = None
 if args.restore_from != None:
@@ -402,7 +404,10 @@ else:
 	print("\tmp4_list[:10] -- ", mp4_list[:10])
 
 
-print("\n\n\n\t==========================")
+
+
+print("\n\n\n")
+print("\t==========================")
 print("\t=== VIDEO LOADER SETUP ===")
 print("\t==========================")
 
@@ -432,11 +437,17 @@ FlatCodedPatchedSet = vp.patch_to_flatpatch(CodedPatchedSet, batch_size=args.bat
 
 
 
+
+
+
+
 print("\n\n\n")
 print("\t========================")
 print("\t=== SETTING UP MODEL ===")
 print("\t========================")
 
+
+## LOADING MODEL INSTANTIATION PARAMS ##
 instantiation_params = None
 if args.restore_from != None: 
 	# Load data (deserialize)
@@ -444,10 +455,8 @@ if args.restore_from != None:
 	with open(instant_param_pth, 'rb') as handle:
 		instantiation_params = pickle.load(handle)
 
-## Setting up the component modules of the top-level PAE model.
-# Encoder 
 
-# Getting arguments 
+## ENCODER ## 
 encoder_args = None
 encoder_kwargs = None
 
@@ -468,14 +477,12 @@ else:
 		'key_dim': enc_keydim, 
 		'mha_dropout': enc_mhadropout
 	}
-
 test_encoder = m2.PAE_Encoder(*encoder_args, **encoder_kwargs)
 test_encoder2 = m2.PAE_Encoder(*encoder_args, **encoder_kwargs)
 
-# Latent evolver 
+## LATENT EVOLVER ## 
 latent_ev_args = None
 latent_ev_kwargs = None
-
 if instantiation_params != None: 
 	latent_ev_args = instantiation_params['latent_ev_args']
 	latent_ev_kwargs = instantiation_params['latent_ev_kwargs']
@@ -495,15 +502,13 @@ else:
 		'key_dim': latent_keydim, 
 		'mha_dropout': latent_mhadropout
 	}
-
 test_latent_ev = m2.PAE_Latent_Evolver(*latent_ev_args,**latent_ev_kwargs) 
 test_latent_ev2 = m2.PAE_Latent_Evolver(*latent_ev_args,**latent_ev_kwargs) 
 
 
-# decoder
+## DECODER ##
 decoder_args = None
 decoder_kwargs = None
-
 if instantiation_params != None:
 	decoder_args = instantiation_params['decoder_args']
 	decoder_kwargs = instantiation_params['decoder_kwargs']
@@ -523,19 +528,17 @@ else:
 		'key_dim': dec_keydim, 
 		'mha_dropout': dec_mhadropout
 	}
-
 test_decoder = m2.PAE_Decoder(*decoder_args, **decoder_kwargs)
 test_decoder2 = m2.PAE_Decoder(*decoder_args, **decoder_kwargs)
 
-# Loss function definition
+
+## LOSS FUNCTIONS ##
 mse = tf.keras.losses.MeanSquaredError()
 mse2 = tf.keras.losses.MeanSquaredError()
 
-# Unpacking some params
 
-## Instantiating the PAE model!
+## FINAL PAE INSTANTIATION ##
 code_dim = 2*(2*k_space+1) + (2*k_time+1) # k_space = 15 and k_time = 64 -> 191
-
 if instantiation_params != None: 
 	perceiver_kwargs = instantiation_params['perceiver_kwargs']
 else:
@@ -543,13 +546,11 @@ else:
 		'code_dim': code_dim,
 		'latent_dims': latent_dims,
 	}
-
-
 perceiver_ae = m2.PerceiverAE(mse, test_encoder, test_latent_ev, test_decoder, **perceiver_kwargs)
 perceiver_ae2 = m2.PerceiverAE(mse2, test_encoder2, test_latent_ev2, test_decoder2, **perceiver_kwargs)
 
 
-## Saving arguments for instantiating the perceiver!
+## SAVING MODEL INSTANTIATION ARGS ##
 instantiation_params = {
 	'encoder_args': encoder_args,
 	'encoder_kwargs': encoder_kwargs,
@@ -559,27 +560,24 @@ instantiation_params = {
 	'decoder_kwargs': decoder_kwargs,
 	'perceiver_kwargs': perceiver_kwargs
 }
-
 instantiation_params_output_pth = os.path.join(args.output_folder, 'instantiation_params.pkl')
-print(f"\nSaving the instantiation parameters to `{instantiation_params_output_pth}`")
-
-# Store data (serialize)
+print(f"\nSaving the instantiation parameters to `{instantiation_params_output_pth}`...")
 with open(instantiation_params_output_pth, 'wb') as handle:
     pickle.dump(instantiation_params, handle, protocol=pickle.HIGHEST_PROTOCOL)
-
 print("Done!")
 
 
+## CHECKPOINT RESTORATION ## 
 if args.restore_from != None: 
 	print(f"Restoring model from {latest}!")
 	perceiver_ae.load_weights(latest)
 	perceiver_ae2.load_weights(latest2)
-
 perceiver_ae.reset_latent()
 perceiver_ae2.reset_latent()
-
-
 print("Done setting up perceiver_ae model!")
+
+
+
 
 
 
