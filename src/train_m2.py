@@ -26,7 +26,7 @@ def training_step(model, present, present_sampled, future_sampled, optimizer, al
 	loss = 0.0 
 	with tf.GradientTape() as tape:
 		blind_loss = model(present_sampled, reset_latent=True)
-		cur_loss = model(present_sampled, remember_this=False)
+		cur_loss = model(present, remember_this=False)
 		if use_future: 
 			fut_loss = model(future_sampled, remember_this=False)
 			loss += cur_loss*alpha + (1-alpha)*fut_loss
