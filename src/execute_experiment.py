@@ -222,39 +222,12 @@ Main steps:
 """
 
 ## Output folder for experiment information.
-NOW = None
-if args.output_folder.endswith('{now}'):
-	args.output_folder = args.output_folder[:-5]
-	print(args.output_folder)
-	ct = str(datetime.datetime.now()).replace(' ', '_')
-	ct = ct.split('.')[0]
-	print("\n",ct)
-	NOW = ct
-	args.output_folder = os.path.join(args.output_folder, ct)
-if not os.path.exists(args.output_folder):
-	os.makedirs(args.output_folder)
+from filesys_utils import make_output_folder 
+NOW, args.output_folder = make_output_folder(args.output_folder)
 
 
 ## Setting up logging (screen + log files).
-class tee :
-    def __init__(self, _fd1, _fd2) :
-        self.fd1 = _fd1
-        self.fd2 = _fd2
-
-    def __del__(self) :
-        if self.fd1 != sys.stdout and self.fd1 != sys.stderr :
-            self.fd1.close()
-        if self.fd2 != sys.stdout and self.fd2 != sys.stderr :
-            self.fd2.close()
-
-    def write(self, text) :
-        self.fd1.write(text)
-        self.fd2.write(text)
-
-    def flush(self) :
-        self.fd1.flush()
-        self.fd2.flush()
-
+from filesys_utils import tee 
 stdoutsav = sys.stdout
 out_log = open(os.path.join(args.output_folder, "stdout.log"), "w")
 sys.stdout = tee(stdoutsav, out_log)
@@ -264,10 +237,8 @@ err_log = open(os.path.join(args.output_folder, "stderr.log"), "w")
 sys.stderr = tee(stderrsav, err_log)
 
 ## Data Folder and Restoration Argument Validation ## 
-# Checking data 
 assert os.path.exists(args.data_folder), f"Invalid data folder `{args.data_folder}` -- no directory!"
 assert os.path.isdir(args.data_folder), f"Data folder `{args.data_folder}` is not a directory!"
-# Checkpoint restoration 
 assert args.restore_from == None or os.path.exists(args.restore_from), f"Checkpoint folder DNE: `{args.restore_from}`."
 
 
