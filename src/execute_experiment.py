@@ -152,6 +152,10 @@ parser.add_argument("--future-selection-probability", action='store', type=float
 		default=0.1, help="Probability of a token from the future time window "+
 		"being selected. Default=0.33.")
 
+parser.add_argument("--present-only", action='store_true', 
+		help='Include this flag to force the model to only train on autoencoding the ' + 
+		'`present` time window.')
+
 
 ## Model parameters ## 
 parser.add_argument('--restore-from', action='store', type=str, default=None,
@@ -745,7 +749,7 @@ for _super_el in FlatPatchSet:
 		end1=time.time()
 
 		strt=time.time()
-		total_loss, present_loss, future_loss, blind_loss = train_m2.training_step(perceiver_ae, present, present_sampled, future_sampled, optimizer, alpha=args.alpha)
+		total_loss, present_loss, future_loss, blind_loss = train_m2.training_step(perceiver_ae, present, present_sampled, future_sampled, optimizer, alpha=args.alpha, use_future=not args.present_only)
 		end=time.time()
 		pbar.set_description(f'Step Time: {round(end-strt,2)}')
 
