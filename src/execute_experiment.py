@@ -1,8 +1,14 @@
 """ This is a training script for the ViT-MAE inspired autoencoding vs. 
-predictive coding experiment. 
+predictive coding experiment. Fundamentally this script just instantiates 
+and trains a perceiver autoencoder to perform compression (and optionally 
+also predictive coding). 
 
-TODO: Describe the script's big-picture steps in detail, with connections to 
-underlying goals. 
+There are a few bells and whistles to also do the following: 
+ 1. Enable model checkpointing/reinstantiation. 
+ 2. Visualize training progress (loss, reconstructions of videos) during 
+	ongoing training. 
+ 3. Perform linear probing + first-differences analysis of the model as 
+    videos are processed. 
 """
 
 ## Import Box
@@ -23,14 +29,18 @@ from packaging import version
 os.environ["TF_GPU_THREAD_MODE"] = "gpu_private"
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 
+sys.path.append("utils") # Adding utils folder to path
+
+
+
 
 
 
 
 print("\n\n\n")
-print("\t=======================================")
-print("\t=== 1 PARSING COMMANDLINE ARGUMENTS ===")
-print("\t=======================================")
+print("=======================================")
+print("=== 1 PARSING COMMANDLINE ARGUMENTS ===")
+print("=======================================\n\n")
 
 """ TODO: Describe the key steps in "parsing commandline arguments
 """
@@ -182,10 +192,15 @@ print("ARGS: \n\t", args)
 
 
 
+
+
+
+
+
 print("\n\n\n")
-print("\t========================================")
-print("\t=== SETTING UP OUTPUT FOLDER/LOGGING ===")
-print("\t========================================")
+print("========================================")
+print("=== SETTING UP OUTPUT FOLDER/LOGGING ===")
+print("========================================\n\n")
 
 """ TODO: Describe the key steps for "setting up output folder/logging/argument validation". 
 """
@@ -232,18 +247,13 @@ stderrsav = sys.stderr
 err_log = open(os.path.join(args.output_folder, "stderr.log"), "w")
 sys.stderr = tee(stderrsav, err_log)
 
-
-
-
 ## Data Folder and Restoration Argument Validation ## 
 # Checking data 
 assert os.path.exists(args.data_folder), f"Invalid data folder `{args.data_folder}` -- no directory!"
 assert os.path.isdir(args.data_folder), f"Data folder `{args.data_folder}` is not a directory!"
-
-
-
 # Checkpoint restoration 
 assert args.restore_from == None or os.path.exists(args.restore_from), f"Checkpoint folder DNE: `{args.restore_from}`."
+
 
 ## Import Box II
 # Updating CPU environment variable before importing Tensorflow.
@@ -263,7 +273,6 @@ import m1
 import video_loader as vl
 import video_preprocess as vp
 import train_m2
-import train_m1
 import parallel_video_loader as pvl
 
 ## Reducing GPU's to 1 if needed. 
@@ -281,11 +290,16 @@ if args.one_gpu:
 
 
 
+
+
+
+
+
 ## Getting the GPU set up
 print("\n\n\n")
-print("\t========================")
-print("\t=== GPU DEVICE SETUP ===")
-print("\t========================")
+print("========================")
+print("=== GPU DEVICE SETUP ===")
+print("========================")
 
 physical_devices = tf.config.list_physical_devices("GPU")
 # for device in physical_devices:
@@ -295,19 +309,30 @@ print("Physical devices: ",physical_devices)
 
 
 
+
+
+
+
+
+
 print("\n\n\n")
-print("\t=============================")
-print("\t=== DATA FORMAT ARG PARSE ===")
-print("\t=============================")
+print("=====================================")
+print("=== ARGUMENT PARSING & VALIDATION ===")
+print("=====================================\n\n")
 
 """ TODO: Describe key steps for data formatting argument parsing.
 """ 
 
+## Model-agnostic data parameters ##
+mp4_list = os.listdir(args.data_folder)
+batch_size = args.batch_size
+num_prefetch = args.num_prefetch
+num_frames = args.num_frames
+if args.overfit != -1:
+	mp4_list = mp4_list[:args.overfit]
 
-# Training loop parameters
-assert args.alpha >= 0 and args.alpha <= 1, f"Alpha must be between 0 and 1 -- received {args.alpha}"
 
-# Frame size
+## Frame & Patch Size ##
 out_size = args.frame_size.split(',')
 assert len(out_size) == 2, f"Invalid `--frame-size` parameter: {args.frame_size}"
 output_size = [int(i) for i in out_size]
@@ -321,21 +346,23 @@ patch_height, patch_width, patch_duration = [int(i) for i in patch_hwd]
 latest = None
 if args.restore_from != None:
 	latest = tf.train.latest_checkpoint(os.path.join(args.restore_from, 'checkpoints'))
-
 latest2 = None 
 if args.restore_from != None: 
 	latest2 = tf.train.latest_checkpoint(os.path.join(args.restore_from, 'checkpoints2'))
 
-# Meta/constants
+
+## Model & Training Params ##
 latent_dims = [int(i) for i in args.latent_dims.split(',')] # potentially overwritten in perceiver_kwargs
 assert len(latent_dims) == 2, f"Invalid latent dims: `{args.latent_dims}`"
-
-# Fourier parameters
+assert args.alpha >= 0 and args.alpha <= 1, f"Alpha must be between 0 and 1 -- received {args.alpha}"
+# Fourier Params
 _k_space, _mu_space = [int(i) for i in args.k_mu_space.split(',')]
 _k_time, _mu_time = [int(i) for i in args.k_mu_time.split(',')]
 
-## Data format args: dictionary holding all the arguments we use to format 
-#  incoming video data that must match if we restore a model from a savepoint.
+
+## Data format args ##
+#  dictionary holding all the arguments we use to format incoming video data 
+#  that must match if we restore a model from a savepoint.
 data_format_args = {
 	'k_space': _k_space,
 	'mu_space': _mu_space,
@@ -346,15 +373,13 @@ data_format_args = {
 	'patch_width': patch_width, 
 	'patch_duration': patch_duration
 }
-
-# Now we check if we need to load in the data format arguments.
+# Check if we need to load in the data format arguments from `restore_from` folder.
 if args.restore_from != None: 
 	# Load data (deserialize)
 	print("Restoring data args from checkpoint folder...")
 	data_args_path = os.path.join(args.restore_from, 'data_format_args.pkl')
 	with open(data_args_path, 'rb') as handle:
 		data_format_args = pickle.load(handle)
-
 # Now we unpack them, regardless of whether they were overwritten.
 k_space = data_format_args['k_space']
 mu_space = data_format_args['mu_space']
@@ -364,28 +389,15 @@ out_size = data_format_args['out_size']
 patch_height = data_format_args['patch_height']
 patch_width = data_format_args['patch_width']
 patch_duration = data_format_args['patch_duration']
-
 # Now we save these arguments for next time.
 print("Saving data formatting arguments...")
 data_args_path = os.path.join(args.output_folder, 'data_format_args.pkl')
 with open(data_args_path, 'wb') as handle:
     pickle.dump(data_format_args, handle, protocol=pickle.HIGHEST_PROTOCOL)
-
 print("Done!")
 
 
-
-# Non-model specific data parameters
-mp4_list = os.listdir(args.data_folder)
-batch_size = args.batch_size
-num_prefetch = args.num_prefetch
-num_frames = args.num_frames
-
-if args.overfit != -1:
-	mp4_list = mp4_list[:args.overfit]
-
-
-
+## Print out dataset args for sanity check ##
 print("DATASET META INFO")
 print("\tnum_frames: ", num_frames)
 print("\tbatch_size: ", batch_size)
@@ -406,10 +418,14 @@ else:
 
 
 
+
+
+
+
 print("\n\n\n")
-print("\t==========================")
-print("\t=== VIDEO LOADER SETUP ===")
-print("\t==========================")
+print("==========================")
+print("=== VIDEO LOADER SETUP ===")
+print("==========================")
 
 
 DATA_FOLDER = "../datasets/downloads"
