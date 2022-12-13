@@ -634,6 +634,8 @@ predictive_training_kwargs = {
 	'present_time_window': args.present,
 	'prediction_time_window': args.future, 
 	'prob_prediction_select': args.future_selection_probability, 
+	'mask_ratio': args.mask_ratio, 
+	'num_frames': args.num_frames, 
 }
 
 print("Caching the predictive training arguments!")
