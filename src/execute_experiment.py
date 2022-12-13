@@ -679,6 +679,16 @@ super_el = el[:,:,:-perceiver_kwargs['code_dim']]
 for _super_el in FlatPatchSet:
 	# super_el = _super_el
 	super_el = tf.constant(_super_el.numpy())
+
+	super_el_mean = tf.math.reduce_mean(super_el)
+	super_el_var = tf.math.reduce_variance(super_el) 
+
+	super_el = super_el - super_el_mean 
+	super_el = super_el * (1/math.sqrt(super_el_var))
+	print("Initial mean: ", super_el_mean)
+	print("Initial var: ", super_el_var)
+	print("Normalized super el mean: ", tf.math.reduce_mean(super_el))
+	print("Normalized super el var: ", tf.math.reduce_variance(super_el))
 	# print("\n\n\nSUPER ELEMENT DEVICE: ", super_el.device, " SHAPE: ", super_el.shape)
 	# print("FAKE SUPER ELEMENT DEVICE: ", _super_el.device, " SHAPE: ", _super_el.shape)
 
