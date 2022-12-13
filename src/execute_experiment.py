@@ -421,27 +421,10 @@ print("==========================")
 DATA_FOLDER = "../datasets/downloads"
 path_list = [os.path.join(DATA_FOLDER, i) for i in mp4_list]
 
-vid_generator = pvl.get_generator(path_list, output_size, num_frames, batch_size, 
-			pool_size=args.pool_size, thread_per_vid=args.threads_per_vid)
 
-
-
-videoset = tf.data.Dataset.from_generator(vid_generator, output_signature=tf.TensorSpec(shape=[args.batch_size, num_frames, *output_size, 3], dtype=tf.float16))
-videoset = videoset.prefetch(args.num_prefetch)
-
-
-print("\tMaking patches from Videoset...")
-PatchSet = vp.make_patchset(videoset, patch_duration, patch_height, patch_width)
-print("\tMaking the flat patch set...")
-FlatPatchSet = vp.patch_to_flatpatch(PatchSet, batch_size=args.batch_size)
-print("\tAdding codes to the PatchSet...")
-CodedPatchedSet = PatchSet.map(lambda x: vp.add_spacetime_codes(x, 
-		k_space=k_space, mu_space=mu_space, k_time=k_time, mu_time=mu_time))
-print("Flattening the coded + patched dataset...")
-FlatCodedPatchedSet = vp.patch_to_flatpatch(CodedPatchedSet, batch_size=args.batch_size)
-
-
-
+vid_generator, videoset, FlatPatchSet, FlatCodedPatchedSet = vp.get_videosets(path_list, 
+		patch_duration, patch_height, patch_width, args.batch_size, num_frames, output_size, 
+		args.num_prefetch, k_space, mu_space, k_time, mu_time, args.threads_per_vid, args.pool_size)
 
 
 

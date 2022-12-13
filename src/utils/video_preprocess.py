@@ -233,6 +233,48 @@ def get_vidtensor_from_8D(tensor):
 	unpatched_hwt = tf.concat([unpatched_hw[:,i,:,:,:,:] for i in range(n_time_p)], axis=1) 
 	return unpatched_hwt
 
+import parallel_video_loader as pvl
+
+def get_videosets(path_list, patch_duration, patch_height, patch_width, batch_size, num_frames, output_size, num_prefetch, k_space, mu_space, k_time, mu_time, threads_per_vid, pool_size):
+	""" This function brings together functionalities of the various 
+	video processing utility files to return the final datasets. 
+
+	Specfically, it will return the `FlatPatchDataset` and `FlatCodedPatchedSet`. 
+
+	args: 
+		`path_list`: A list full paths to all video files of interest. 
+		`patch_duration`, `patch_height`, `patch_width`
+		`batch_size` 
+		`num_frames` 
+		`output_size`: 2-long list of integers of [height, width] 
+		`num_prefetch`
+		`k_space`, `mu_space`, `k_time`, `mu_time` 
+	""" 
+
+	vid_generator = pvl.get_generator(path_list, output_size, num_frames, batch_size, 
+			pool_size=pool_size, thread_per_vid=threads_per_vid)
+
+	videoset = tf.data.Dataset.from_generator(vid_generator, output_signature=tf.TensorSpec(shape=[batch_size, num_frames, *output_size, 3], dtype=tf.float16))
+	videoset = videoset.prefetch(num_prefetch)
+
+
+	print("\tMaking patches from Videoset...") 
+	PatchSet = make_patchset(videoset, patch_duration, patch_height, patch_width)
+	print("\tMaking the flat patch set...")
+	FlatPatchSet = patch_to_flatpatch(PatchSet, batch_size=batch_size)
+	print("\tAdding codes to the PatchSet...")
+	CodedPatchedSet = PatchSet.map(lambda x: add_spacetime_codes(x, 
+			k_space=k_space, mu_space=mu_space, k_time=k_time, mu_time=mu_time))
+	print("Flattening the coded + patched dataset...")
+	FlatCodedPatchedSet = patch_to_flatpatch(CodedPatchedSet, batch_size=batch_size)
+
+	return vid_generator, videoset, FlatPatchSet, FlatCodedPatchedSet
+
+
+
+
+
+
 
 if __name__ == "__main__": 
 	## Getting the VideoSet
