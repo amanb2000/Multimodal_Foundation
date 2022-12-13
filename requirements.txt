@@ -6,8 +6,10 @@ jupyter
 yt-dlp
 tqdm
 tensorflow
+tensorboard_plugin_profile
 matplotlib
 opencv-python
 imageio
 pyyaml 
 h5py
+packaging
