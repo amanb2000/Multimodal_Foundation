@@ -42,7 +42,11 @@ print("=======================================")
 print("=== 1 PARSING COMMANDLINE ARGUMENTS ===")
 print("=======================================\n\n")
 
-""" TODO: Describe the key steps in "parsing commandline arguments
+""" Here we are just defining all the commandline arguments the script can take. 
+They boil down to the following categories: 
+ - Dataset parameters (data location, frame sizes, patch sizes, etc.)
+ - Training parameters & data traversal parameters (window sizes, learning rates)
+ - Model parameters (potentially overwritten if we are loading weights from elsewhere)
 """
 
 parser = argparse.ArgumentParser(description='Train model M1 (perceiver AE).')
@@ -169,19 +173,18 @@ parser.add_argument('--mhadropout', action='store', type=float, default=0.0,
 # Encoder
 parser.add_argument('--n-enc-blocks', action='store', type=int, default=1, 
 		help="Number of encoder blocks in the model. Default=1.")
-
 # Latent evolver
 parser.add_argument('--n-latent-blocks', action='store', type=int, default=5, 
 		help="Number of transformer blocks in the latent module. Default=5.")
 parser.add_argument('--identical-latent', action='store_true', 
 		help="Include this flag to make each latent block identical.")
-
 # Decoder 
 parser.add_argument('--n-dec-blocks', action='store', type=int, default=3,
 		help='Number of transformer blocks in the decoder module.')
 parser.add_argument('--dec-expansion-block', action='store', type=int, default=2,
 		help='Block number (0-indexed) when the token dimensionality is '+
 		'expanded in the decoder.')
+
 
 
 args = parser.parse_args() 
@@ -202,7 +205,15 @@ print("========================================")
 print("=== SETTING UP OUTPUT FOLDER/LOGGING ===")
 print("========================================\n\n")
 
-""" TODO: Describe the key steps for "setting up output folder/logging/argument validation". 
+""" Before we start processing parameters, building models, and loading data, 
+we need to get our logging setup. That way, any errors/issues in the subsequent 
+stages are logged to a permanent location. 
+
+Main steps: 
+ 1. Create the output directory. 
+ 2. Set up split logging ("tee") -- stdio and stderr are printed to the screen 
+	AND are recorded to some log files in the output directory.
+ 3. Misc validation of folder locations, etc.
 """
 
 ## Output folder for experiment information.
@@ -255,6 +266,13 @@ assert os.path.isdir(args.data_folder), f"Data folder `{args.data_folder}` is no
 assert args.restore_from == None or os.path.exists(args.restore_from), f"Checkpoint folder DNE: `{args.restore_from}`."
 
 
+
+
+
+
+
+
+
 ## Import Box II
 # Updating CPU environment variable before importing Tensorflow.
 if args.cpu_only:
@@ -268,8 +286,7 @@ from tqdm import tqdm
 import cv2
 import imageio
 
-import m2
-import m1
+import model
 import video_loader as vl
 import video_preprocess as vp
 import train_m2
@@ -320,7 +337,9 @@ print("=====================================")
 print("=== ARGUMENT PARSING & VALIDATION ===")
 print("=====================================\n\n")
 
-""" TODO: Describe key steps for data formatting argument parsing.
+""" Making sure the commandline arguments actually make sense. 
+If so, we also process them into the correct datatypes (e.g., strings -> 
+lists and ints). 
 """ 
 
 ## Model-agnostic data parameters ##
@@ -346,9 +365,6 @@ patch_height, patch_width, patch_duration = [int(i) for i in patch_hwd]
 latest = None
 if args.restore_from != None:
 	latest = tf.train.latest_checkpoint(os.path.join(args.restore_from, 'checkpoints'))
-latest2 = None 
-if args.restore_from != None: 
-	latest2 = tf.train.latest_checkpoint(os.path.join(args.restore_from, 'checkpoints2'))
 
 
 ## Model & Training Params ##
@@ -361,8 +377,8 @@ _k_time, _mu_time = [int(i) for i in args.k_mu_time.split(',')]
 
 
 ## Data format args ##
-#  dictionary holding all the arguments we use to format incoming video data 
-#  that must match if we restore a model from a savepoint.
+#  `data_format_args` is a dictionary holding all the arguments we use to format 
+#  incoming video data that must match if we restore a model from a savepoint.
 data_format_args = {
 	'k_space': _k_space,
 	'mu_space': _mu_space,
@@ -405,11 +421,9 @@ print("\toutput_size: ", output_size)
 print("\tPatch h/w/d: ", patch_height, patch_width, patch_duration)
 print("\tk, mu for space, time: ", (k_space, mu_space), (k_time, mu_time))
 print("\tLatent dims: ", latent_dims)
-
 if args.restore_from != None: 
 	print("\tRestoring from -- ", args.restore_from)
 	print("\tMost recent checkpoint: ", latest)
-
 if args.overfit != -1:
 	print(f"\tOverfitting to the first {args.overfit} elements.")
 else: 
