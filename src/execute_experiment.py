@@ -183,13 +183,13 @@ parser.add_argument('--n-enc-blocks', action='store', type=int, default=1,
 parser.add_argument('--n-latent-blocks', action='store', type=int, default=5, 
 		help="Number of transformer blocks in the latent module. Default=5.")
 parser.add_argument('--identical-latent', action='store_true', 
-		help="Include this flag to make each latent block identical. Default=True.")
+		help="Include this flag to make each latent block identical. Default=False.")
 # Decoder 
-parser.add_argument('--n-dec-blocks', action='store', type=int, default=3,
-		help='Number of transformer blocks in the decoder module. Default=3.')
-parser.add_argument('--dec-expansion-block', action='store', type=int, default=2,
+parser.add_argument('--n-dec-blocks', action='store', type=int, default=1,
+		help='Number of transformer blocks in the decoder module. Default=1.')
+parser.add_argument('--dec-expansion-block', action='store', type=int, default=0,
 		help='Block number (0-indexed) when the token dimensionality is '+
-		'expanded in the decoder. Default=2.')
+		'expanded in the decoder. Default=0.')
 
 
 
@@ -654,6 +654,8 @@ num_true = round(args.future_selection_probability * future_tokens)
 future_mask[:num_true] = True
 
 
+
+
 ## Look at present, predict present. Predict future. 
 
 
@@ -725,7 +727,72 @@ for _super_el in FlatPatchSet:
 			tf.summary.scalar('future_loss', future_loss.numpy(), step=subcnt)
 			tf.summary.scalar('prep_time', end1-strt1, step=subcnt)
 			tf.summary.scalar('step_time', end-strt, step=subcnt)
+	
 
+
+
+	## Unpatching and Visualizing the first 5 batch element's 1st frames ##
+	source_patches = super_el[:5, :present_tokens, :]
+
+	source_patches *= math.sqrt(super_el_var)
+	source_patches += super_el_mean
+
+	n_time_patches = num_frames // patch_duration
+	n_height_patches = int(out_size[0]) // patch_height
+	n_width_patches = int(out_size[1]) // patch_width
+
+	unflattened_patched = vp.unflatten_patched(source_patches[:,:,:], 1, n_height_patches, n_width_patches)
+	unflattened_8d = vp.make_3D_patches(unflattened_patched, patch_duration, patch_height, patch_width)
+	unpatched_source = vp.get_vidtensor_from_8D(unflattened_8d)
+	unpatched_source_np = unpatched_source.numpy().astype(np.float32)
+
+	print("Unpatched.shape: ", unpatched_source_np.shape)
+	print("Sliced unpatched source shape: ", unpatched_source_np[0,:,:,:,:].shape)
+	# pdb.set_trace()
+
+	with train_summary_writer.as_default(): 
+		for i in range(5): 
+			img = unpatched_source_np[i,0,:,:,:]
+			print("image shape: ", img.shape)
+			img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+			img_rgb = np.expand_dims(img_rgb, axis=0)
+			print("rgb image shape: ", img_rgb.shape)
+			tf.summary.image(f"Training data ex{i}", img_rgb, step=subcnt)
+		
+
+	## Running the first 5 batch elements thru model (masked 1st `present` window) & Visualizing ##
+	el = super_el[:,0:sub_el_tokens,:]
+	el = tf.concat([el, current_interval_codes], 2)
+
+	present = el[:5,:present_tokens, :]
+	future = el[:5,present_tokens:present_tokens+future_tokens, :]
+	present_sampled = tf.boolean_mask(present, present_mask, axis=1) # use the boolean sampling mask thing.
+	future_sampled = tf.boolean_mask(future, future_mask, axis=1)
+
+	blind_loss = perceiver_ae(present_sampled, reset_latent=True) 
+	cur_loss, present_reconst = perceiver_ae(present, remember_this=False, return_prediction=True)
+	fut_loss, future_reconst = perceiver_ae(future, remember_this=False, return_prediction=True)
+
+	present_reconst *= math.sqrt(super_el_var)
+	present_reconst += super_el_mean.numpy()
+
+	unflattened_patched = vp.unflatten_patched(present_reconst[:,:,:], 1, n_height_patches, n_width_patches)
+	unflattened_8d = vp.make_3D_patches(unflattened_patched, patch_duration, patch_height, patch_width)
+	unpatched_reconst = vp.get_vidtensor_from_8D(unflattened_8d)
+	unpatched_reconst_np = unpatched_reconst.numpy().astype(np.float32)
+
+	print("Unpatched.shape: ", unpatched_reconst_np.shape)
+	print("Sliced unpatched source shape: ", unpatched_reconst_np[0,:,:,:,:].shape)
+	# pdb.set_trace()
+
+	with train_summary_writer.as_default(): 
+		for i in range(5): 
+			img = unpatched_reconst_np[i,0,:,:,:]
+			print("image shape: ", img.shape)
+			img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+			img_rgb = np.expand_dims(img_rgb, axis=0)
+			print("rgb image shape: ", img_rgb.shape)
+			tf.summary.image(f"Reconst Present ex{i}", img_rgb, step=subcnt)
 
 
 
