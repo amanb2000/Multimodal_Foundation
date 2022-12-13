@@ -93,12 +93,13 @@ parser.add_argument('--k-mu-time', action='store', type=str,
 
 ## Video loader args ## 
 parser.add_argument('--pool-size', action='store', type=int, 
-		help='Number of CPU threads allocated to the video loading.',
+		help='Number of CPU threads allocated to the video loading. ' + 
+		'Default=20',
 		default=20)
 
 parser.add_argument('--threads-per-vid', action='store', type=int, 
 		help='Number of threads for loading an individual video. Only '+
-		'use this for long videos.', 
+		'use this for long videos. Default=1', 
 		default=1)
 
 
@@ -108,10 +109,10 @@ parser.add_argument('--overfit', action='store', type=int, default=-1,
 		'on those. Default=-1 (i.e. use the full dataset).')
 
 parser.add_argument('--cpu-only', action='store_true', 
-		help='Include this flag to force training to use only CPU.')
+		help='Include this flag to force training to use only CPU. Default=False')
 
 parser.add_argument('--one-gpu', action='store_true', 
-		help='Include this flag to force training to use only one GPU.')
+		help='Include this flag to force training to use only one GPU. Default=False.')
 
 parser.add_argument('--ckpt-period', action='store', type=int,
 		help='Number of iterations separating each checkpoint. Default=50.',
@@ -138,7 +139,8 @@ parser.add_argument("--alpha", action='store', type=float, default=0.7,
 
 parser.add_argument('--num-frames', action='store', type=int, default=100, 
 		help="Number of frames read in per iteration. Sub-iterations are used "+
-		"to train the model on `present` + `future`-frame length subsets.")
+		"to train the model on `present` + `future`-frame length subsets. "+
+		"Default=100.")
 
 parser.add_argument("--present", action='store', type=int, default=1, 
 		help="Number of frames in the `present` time window. Default=1.")
@@ -177,18 +179,17 @@ parser.add_argument('--n-enc-blocks', action='store', type=int, default=1,
 parser.add_argument('--n-latent-blocks', action='store', type=int, default=5, 
 		help="Number of transformer blocks in the latent module. Default=5.")
 parser.add_argument('--identical-latent', action='store_true', 
-		help="Include this flag to make each latent block identical.")
+		help="Include this flag to make each latent block identical. Default=True.")
 # Decoder 
 parser.add_argument('--n-dec-blocks', action='store', type=int, default=3,
-		help='Number of transformer blocks in the decoder module.')
+		help='Number of transformer blocks in the decoder module. Default=3.')
 parser.add_argument('--dec-expansion-block', action='store', type=int, default=2,
 		help='Block number (0-indexed) when the token dimensionality is '+
-		'expanded in the decoder.')
+		'expanded in the decoder. Default=2.')
 
 
 
 args = parser.parse_args() 
-print("ARGS: \n\t", args)
 
 
 
@@ -507,8 +508,7 @@ else:
 		'key_dim': enc_keydim, 
 		'mha_dropout': enc_mhadropout
 	}
-test_encoder = m2.PAE_Encoder(*encoder_args, **encoder_kwargs)
-test_encoder2 = m2.PAE_Encoder(*encoder_args, **encoder_kwargs)
+test_encoder = model.PAE_Encoder(*encoder_args, **encoder_kwargs)
 
 ## LATENT EVOLVER ## 
 latent_ev_args = None
@@ -532,8 +532,7 @@ else:
 		'key_dim': latent_keydim, 
 		'mha_dropout': latent_mhadropout
 	}
-test_latent_ev = m2.PAE_Latent_Evolver(*latent_ev_args,**latent_ev_kwargs) 
-test_latent_ev2 = m2.PAE_Latent_Evolver(*latent_ev_args,**latent_ev_kwargs) 
+test_latent_ev = model.PAE_Latent_Evolver(*latent_ev_args,**latent_ev_kwargs) 
 
 
 ## DECODER ##
@@ -558,13 +557,11 @@ else:
 		'key_dim': dec_keydim, 
 		'mha_dropout': dec_mhadropout
 	}
-test_decoder = m2.PAE_Decoder(*decoder_args, **decoder_kwargs)
-test_decoder2 = m2.PAE_Decoder(*decoder_args, **decoder_kwargs)
+test_decoder = model.PAE_Decoder(*decoder_args, **decoder_kwargs)
 
 
 ## LOSS FUNCTIONS ##
 mse = tf.keras.losses.MeanSquaredError()
-mse2 = tf.keras.losses.MeanSquaredError()
 
 
 ## FINAL PAE INSTANTIATION ##
@@ -576,8 +573,7 @@ else:
 		'code_dim': code_dim,
 		'latent_dims': latent_dims,
 	}
-perceiver_ae = m2.PerceiverAE(mse, test_encoder, test_latent_ev, test_decoder, **perceiver_kwargs)
-perceiver_ae2 = m2.PerceiverAE(mse2, test_encoder2, test_latent_ev2, test_decoder2, **perceiver_kwargs)
+perceiver_ae = model.PerceiverAE(mse, test_encoder, test_latent_ev, test_decoder, **perceiver_kwargs)
 
 
 ## SAVING MODEL INSTANTIATION ARGS ##
@@ -601,9 +597,7 @@ print("Done!")
 if args.restore_from != None: 
 	print(f"Restoring model from {latest}!")
 	perceiver_ae.load_weights(latest)
-	perceiver_ae2.load_weights(latest2)
 perceiver_ae.reset_latent()
-perceiver_ae2.reset_latent()
 print("Done setting up perceiver_ae model!")
 
 
@@ -652,7 +646,6 @@ if not os.path.exists(os.path.dirname(checkpoint_path2)):
 
 # TODO: Update as tfa's LAMB optimizer
 optimizer = keras.optimizers.Adam(learning_rate=args.lr)
-optimizer2 = keras.optimizers.Adam(learning_rate=args.lr)
 
 
 ## Predictive training args
@@ -753,7 +746,6 @@ for _super_el in FlatPatchSet:
 
 		strt=time.time()
 		total_loss, present_loss, future_loss, blind_loss = train_m2.training_step(perceiver_ae, present, present_sampled, future_sampled, optimizer, alpha=args.alpha)
-		total_loss2, present_loss2, future_loss2, blind_loss2 = train_m2.training_step(perceiver_ae2, present, present_sampled, future_sampled, optimizer, alpha=args.alpha, use_future=False)
 		end=time.time()
 		pbar.set_description(f'Step Time: {round(end-strt,2)}')
 
@@ -763,12 +755,6 @@ for _super_el in FlatPatchSet:
 			tf.summary.scalar('blind_loss', blind_loss.numpy(), step=subcnt)
 			tf.summary.scalar('present_loss', present_loss.numpy(), step=subcnt)
 			tf.summary.scalar('future_loss', future_loss.numpy(), step=subcnt)
-			tf.summary.scalar('prep_time', end1-strt1, step=subcnt)
-			tf.summary.scalar('step_time', end-strt, step=subcnt)
-
-			tf.summary.scalar('total_loss2', total_loss2.numpy(), step=subcnt)
-			tf.summary.scalar('blind_loss2', blind_loss2.numpy(), step=subcnt)
-			tf.summary.scalar('present_loss2', present_loss2.numpy(), step=subcnt)
 			tf.summary.scalar('prep_time', end1-strt1, step=subcnt)
 			tf.summary.scalar('step_time', end-strt, step=subcnt)
 
