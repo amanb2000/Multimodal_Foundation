@@ -180,8 +180,8 @@ parser.add_argument('--mhadropout', action='store', type=float, default=0.0,
 parser.add_argument('--n-enc-blocks', action='store', type=int, default=1, 
 		help="Number of encoder blocks in the model. Default=1.")
 # Latent evolver
-parser.add_argument('--n-latent-blocks', action='store', type=int, default=5, 
-		help="Number of transformer blocks in the latent module. Default=5.")
+parser.add_argument('--n-latent-blocks', action='store', type=int, default=1, 
+		help="Number of transformer blocks in the latent module. Default=1.")
 parser.add_argument('--identical-latent', action='store_true', 
 		help="Include this flag to make each latent block identical. Default=False.")
 # Decoder 
@@ -245,7 +245,14 @@ assert args.restore_from == None or os.path.exists(args.restore_from), f"Checkpo
 
 
 
+## Printing out the invocation arguments at the top of the log file ##
+x = ''
+for i in sys.argv: 
+    x += i
+    x += ' '
 
+print(x)
+print("\n\n\n\n\n")
 
 
 
@@ -594,9 +601,6 @@ checkpoint_path = os.path.join(args.output_folder,"checkpoints/cp-{epoch:04d}.ck
 if not os.path.exists(os.path.dirname(checkpoint_path)):
 	os.makedirs(os.path.dirname(checkpoint_path))
 
-checkpoint_path2 = os.path.join(args.output_folder,"checkpoints2/cp-{epoch:04d}.ckpt")
-if not os.path.exists(os.path.dirname(checkpoint_path2)):
-	os.makedirs(os.path.dirname(checkpoint_path2))
 
 
 
@@ -746,17 +750,11 @@ for _super_el in FlatPatchSet:
 	unpatched_source = vp.get_vidtensor_from_8D(unflattened_8d)
 	unpatched_source_np = unpatched_source.numpy().astype(np.float32)
 
-	print("Unpatched.shape: ", unpatched_source_np.shape)
-	print("Sliced unpatched source shape: ", unpatched_source_np[0,:,:,:,:].shape)
-	# pdb.set_trace()
-
 	with train_summary_writer.as_default(): 
 		for i in range(5): 
 			img = unpatched_source_np[i,0,:,:,:]
-			print("image shape: ", img.shape)
 			img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 			img_rgb = np.expand_dims(img_rgb, axis=0)
-			print("rgb image shape: ", img_rgb.shape)
 			tf.summary.image(f"Training data ex{i}", img_rgb, step=subcnt)
 		
 
@@ -781,17 +779,13 @@ for _super_el in FlatPatchSet:
 	unpatched_reconst = vp.get_vidtensor_from_8D(unflattened_8d)
 	unpatched_reconst_np = unpatched_reconst.numpy().astype(np.float32)
 
-	print("Unpatched.shape: ", unpatched_reconst_np.shape)
-	print("Sliced unpatched source shape: ", unpatched_reconst_np[0,:,:,:,:].shape)
 	# pdb.set_trace()
 
 	with train_summary_writer.as_default(): 
 		for i in range(5): 
 			img = unpatched_reconst_np[i,0,:,:,:]
-			print("image shape: ", img.shape)
 			img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 			img_rgb = np.expand_dims(img_rgb, axis=0)
-			print("rgb image shape: ", img_rgb.shape)
 			tf.summary.image(f"Reconst Present ex{i}", img_rgb, step=subcnt)
 
 
@@ -814,7 +808,6 @@ for _super_el in FlatPatchSet:
 	
 	if cnt % checkpoint_period == 0:
 		perceiver_ae.save_weights(checkpoint_path.format(epoch=cnt))
-		perceiver_ae2.save_weights(checkpoint_path2.format(epoch=cnt))
 
 	continue
 # tf.profiler.experimental.stop()
