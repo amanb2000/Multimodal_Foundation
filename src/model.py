@@ -383,6 +383,23 @@ class PerceiverAE(keras.Model):
 		_latent_init = self.latent_init(None)
 		self.latent = tf.concat([_latent_init for i in range(B)], axis=0)
 
+	def update_latent(self, reconstruct_me, reset_latent=False): 
+		""" Updates the latent state with some new patch information. 
+
+		Args: 
+			`reconstruct_me`: 
+				The tensor of size [batch, num_tokens, token_dim] that 
+				we are adding to the perceiver's latent tensor.
+		""" 
+		if reset_latent or self.latent == None or reconstruct_me.shape[0] != self.latent.shape[0]: 
+			B = reconstruct_me.shape[0]
+			self.reset_latent(B=B)
+		# Incorporating new information into the latent 
+		self.latent = self.encoder([self.latent, reconstruct_me])
+
+		# Evolving the latent state autonomously
+		self.latent = self.latent_ev(self.latent)
+
 	def call(self, reconstruct_me, reset_latent=False, return_prediction=False, 
 			remember_this=True):
 		""" 
@@ -418,11 +435,7 @@ class PerceiverAE(keras.Model):
 		surprise = self.loss_fn(prediction, reconstruct_me[:,:,:-self.code_dim])
 
 		if remember_this:
-			# Incorporating new information into the latent 
-			self.latent = self.encoder([self.latent, reconstruct_me])
-
-			# Evolving the latent state autonomously
-			self.latent = self.latent_ev(self.latent)
+			self.update_latent(reconstruct_me)
 
 		# Returning the surprise
 		if return_prediction: 
