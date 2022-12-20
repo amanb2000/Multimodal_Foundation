@@ -25,7 +25,9 @@ def training_step(model, present, present_sampled, future_sampled, optimizer, al
 
 	loss = 0.0 
 	with tf.GradientTape() as tape:
-		blind_loss = model(present_sampled, reset_latent=True)
+		# blind_loss = model(present_sampled, reset_latent=True)
+		
+		model.update_latent(present_sampled, reset_latent=True)
 		cur_loss = model(present, remember_this=False)
 		if use_future: 
 			fut_loss = model(future_sampled, remember_this=False)
@@ -36,4 +38,4 @@ def training_step(model, present, present_sampled, future_sampled, optimizer, al
 
 	grads = tape.gradient(loss, model.trainable_weights)
 	optimizer.apply_gradients(zip(grads, model.trainable_weights))
-	return loss, cur_loss, fut_loss, blind_loss
+	return loss, cur_loss, fut_loss, cur_loss
