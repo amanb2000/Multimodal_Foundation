@@ -115,8 +115,8 @@ parser.add_argument('--one-gpu', action='store_true',
 		help='Include this flag to force training to use only one GPU. Default=False.')
 
 parser.add_argument('--ckpt-period', action='store', type=int,
-		help='Number of iterations separating each checkpoint. Default=50.',
-		default=50)
+		help='Number of iterations separating each checkpoint. Default=10.',
+		default=10)
 
 parser.add_argument('--num-iters', action='store', type=int,
 		help="Number of total iterations. Each iteration is one training step "+
@@ -263,6 +263,7 @@ if args.cpu_only:
 
 import tensorflow as tf 
 from tensorflow import keras
+import tensorflow_addons as tfa
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -326,7 +327,9 @@ lists and ints).
 """ 
 
 ## Model-agnostic data parameters ##
-mp4_list = os.listdir(args.data_folder)
+data_pth = pathlib.Path(args.data_folder) 
+mp4_list = [str(p) for p in data_pth.rglob("*.mp4")]
+
 batch_size = args.batch_size
 num_prefetch = args.num_prefetch
 num_frames = args.num_frames
@@ -425,9 +428,9 @@ print("=== VIDEO LOADER SETUP ===")
 print("==========================")
 
 
-DATA_FOLDER = "../datasets/downloads"
-path_list = [os.path.join(DATA_FOLDER, i) for i in mp4_list]
+path_list = [i.replace(' ', '\ ') for i in mp4_list]
 
+print("PATH LIST: ", path_list[:10])
 
 vid_generator, videoset, FlatPatchSet, FlatCodedPatchedSet = vp.get_videosets(path_list, 
 		patch_duration, patch_height, patch_width, args.batch_size, num_frames, output_size, 
@@ -607,6 +610,7 @@ if not os.path.exists(os.path.dirname(checkpoint_path)):
 
 
 # TODO: Update as tfa's LAMB optimizer
+# optimizer = tfa.optimizers.AdamW(learning_rate=args.lr, weight_decay=0.05)
 optimizer = keras.optimizers.Adam(learning_rate=args.lr)
 
 
@@ -691,12 +695,10 @@ for _super_el in FlatPatchSet:
 
 	super_el = super_el - super_el_mean 
 	super_el = super_el * (1/math.sqrt(super_el_var))
-	print("Initial mean: ", super_el_mean)
-	print("Initial var: ", super_el_var)
-	print("Normalized super el mean: ", tf.math.reduce_mean(super_el))
-	print("Normalized super el var: ", tf.math.reduce_variance(super_el))
-	# print("\n\n\nSUPER ELEMENT DEVICE: ", super_el.device, " SHAPE: ", super_el.shape)
-	# print("FAKE SUPER ELEMENT DEVICE: ", _super_el.device, " SHAPE: ", _super_el.shape)
+
+	with train_summary_writer.as_default():
+		tf.summary.scalar('batch_pixel_mean', super_el_mean.numpy(), step=subcnt)
+		tf.summary.scalar('batch_pixel_var', super_el_var.numpy(), step=subcnt)
 
 	## Sample present and future tensors.
 	pbar=tqdm(range(args.num_frames-args.present-args.future), leave=False)
@@ -731,6 +733,7 @@ for _super_el in FlatPatchSet:
 			tf.summary.scalar('future_loss', future_loss.numpy(), step=subcnt)
 			tf.summary.scalar('prep_time', end1-strt1, step=subcnt)
 			tf.summary.scalar('step_time', end-strt, step=subcnt)
+
 	
 
 
