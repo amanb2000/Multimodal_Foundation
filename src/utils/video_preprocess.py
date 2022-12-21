@@ -31,7 +31,13 @@ import video_loader as vl
 
 import pdb
 
+def create_patches(video_tensor, ksizes=[1,4,16,16,1]): 
+	"""Converts `video_tensor` into a sequence of patches.
+	Input has shape [frames, width, height, channels]
 
+	ksizes=[1,4,16,16,1] -> 4 temporal depth, 16 height/width. 
+	"""
+	return tf.extract_volume_patches(video_tensor, ksizes,ksizes,"VALID")
 def make_patchset(VideoSet, patch_duration, patch_height, patch_width): 
 	"""Takes a VideoSet tf.data.Dataset object with full video tensors 
 	of size [batch, nframes, height, width, channels] and returns a set of 
@@ -39,32 +45,24 @@ def make_patchset(VideoSet, patch_duration, patch_height, patch_width):
 
 	These are NOT flattened patches. 
 	"""
-	def create_patches(video_tensor, ksizes=[1,4,16,16,1]): 
-		"""Converts `video_tensor` into a sequence of patches.
-		Input has shape [frames, width, height, channels]
-
-		ksizes=[1,4,16,16,1] -> 4 temporal depth, 16 height/width. 
-		"""
-		return tf.extract_volume_patches(video_tensor, ksizes,ksizes,"VALID")
-
 	ks = [1, patch_duration, patch_height, patch_width, 1]
 
 	PatchedSet = VideoSet.map(lambda x: create_patches(x, ksizes=ks))
 	return PatchedSet
 
 
+
+def flatten_patched(patch_tensor, batch_size=1):
+	""" Flattens the 3D structure of spacetime patches into a [batch, num_patches, patch_len] 
+	tensor. Should be applied after positional encoding, generally. 
+	"""
+	# print("Flattening a tensor of shape: ", patch_tensor.shape)
+	b, t, h, w, cs = patch_tensor.shape
+	return tf.reshape(patch_tensor, [batch_size, t*h*w, cs])
 def patch_to_flatpatch(PatchedSet, batch_size=1): 
 	""" Takes a PatchedSet and flattens the [x, y, time] dimensions so that 
 	each video is a 2D matrix of patches. Does not account for positional encoding. 
 	"""
-	def flatten_patched(patch_tensor, batch_size=1):
-		""" Flattens the 3D structure of spacetime patches into a [batch, num_patches, patch_len] 
-		tensor. Should be applied after positional encoding, generally. 
-		"""
-		# print("Flattening a tensor of shape: ", patch_tensor.shape)
-		b, t, h, w, cs = patch_tensor.shape
-		return tf.reshape(patch_tensor, [batch_size, t*h*w, cs])
-
 	FlatPatchSet = PatchedSet.map(lambda x: flatten_patched(x, batch_size=batch_size))
 	return FlatPatchSet
 
